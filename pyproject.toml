@@ -1,0 +1,33 @@
+# Nirman-AI (Paimana) project metadata + Vercel Python deployment config.
+#
+# Vercel's Python runtime uses `uv` to lock/install dependencies, which
+# requires a valid [project] table. Dependencies below intentionally mirror
+# requirements.txt (kept for local pip installs) so the two never drift.
+[project]
+name = "nirmanai"
+version = "1.0.0"
+description = "Nirman-AI (Paimana) infrastructure oversight co-pilot - FastAPI backend + React dashboard"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
+    "pandas>=3.0.5",
+    "numpy>=2.5.3",
+    "xgboost>=3.4.1",
+    "shap>=0.52.0",
+    "scikit-learn>=1.9.0",
+    "scipy>=1.18.1",
+    "matplotlib>=3.11.1",
+    "pydantic>=2.13.5",
+    "httpx>=0.28.1",
+    "python-multipart>=0.0.9",
+    "Pillow>=10.0.0",
+    "piexif>=1.1.3",
+    "imagehash>=4.3.1",
+]
+
+# Tells the Vercel Python runtime where the ASGI app lives:
+#   api.py  ->  variable "app"
+# https://vercel.com/docs/frameworks/backend/fastapi#exporting-the-fastapi-application
+[tool.vercel]
+entrypoint = "api:app"

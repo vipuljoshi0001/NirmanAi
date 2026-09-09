@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Infrastructure Oversight Co-Pilot</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #0f172a; color: #e2e8f0; padding: 20px; }
+  h1 { font-size: 20px; margin-bottom: 4px; color: #fff; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; color: #f8fafc; margin-bottom: 8px; }
+  .card .tag { font-size: 11px; color: #7dd3fc; font-weight: 600; text-transform: uppercase; }
+  canvas { width: 100%; height: 220px; }
+  select, button { background: #334155; color: #e2e8f0; border: 1px solid #475569;
+                   border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+  .row2 { margin-top: 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { font-size: 12px; padding: 3px 8px; border-radius: 999px; }
+  .chip.High, .chip.Critical { background: #7f1d1d; color: #fca5a5; }
+  .chip.Medium { background: #7c2d12; color: #fdba74; }
+  .chip.Low { background: #14532d; color: #86efac; }
+  .gauge { text-align: center; }
+  .gauge .num { font-size: 40px; font-weight: 700; }
+  .Critical { color: #f87171; } .High { color: #fb923c; }
+  .Medium { color: #facc15; } .Low { color: #4ade80; }
+  .bars div { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 13px; }
+  .bars .lbl { width: 170px; text-align: right; }
+  .bars .bar { height: 10px; background: #38bdf8; border-radius: 4px; }
+  table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #334155; }
+  .shap li, .warn li { font-size: 12px; margin: 3px 0; list-style: none; }
+</style>
+</head>
+<body>
+<h1>Infrastructure Oversight Co-Pilot</h1>
+<div class="sub">REAL portal aggregates side-by-side with per-project predictive risk &mdash;
+  <span class="tag">synthetic project records</span></div>
+
+<div class="grid">
+  <div class="card">
+    <h2><span class="tag">REAL</span> National cost overrun trend (Feb&ndash;Jul)</h2>
+    <canvas id="natChart"></canvas>
+  </div>
+  <div class="card">
+    <h2><span class="tag">REAL</span> Cost overrun by sector (avg %)</h2>
+    <canvas id="sectorChart"></canvas>
+  </div>
+  <div class="card">
+    <h2><span class="tag">REAL</span> Cost overrun by state (top 15, avg %)</h2>
+    <canvas id="stateChart"></canvas>
+  </div>
+</div>
+
+<div class="grid row2">
+  <div class="card">
+    <h2><span class="tag">PREDICTIVE</span> Project risk score</h2>
+    <label for="proj">Project: </label><select id="proj"></select>
+    <div class="gauge"><div class="num" id="riskNum">--</div><div id="riskLevel" class="Medium">--</div></div>
+    <div class="bars">
+      <div><span class="lbl">COP probability</span><div class="bar" id="copBar" style="width:0%"></div><span id="copVal">--</span></div>
+      <div><span class="lbl">TOP probability</span><div class="bar" id="topBar" style="width:0%"></div><span id="topVal">--</span></div>
+      <div><span class="lbl">sector baseline</span><span id="secBase">--</span></div>
+      <div><span class="lbl">state baseline</span><span id="staBase">--</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>SHAP drivers (COP model)</h2>
+    <ul class="shap" id="shap"></ul>
+  </div>
+  <div class="card">
+    <h2>Active warnings</h2>
+    <div class="chips" id="warnings"><span style="color:#94a3b8">select a project</span></div>
+  </div>
+</div>
+
+<div class="grid row2">
+  <div class="card" style="grid-column: 1 / -1;">
+    <h2>Monthly trajectory (<span id="trajProj">--</span>): physical / financial progress &amp; cost overrun</h2>
+    <canvas id="trajChart" style="height:240px"></canvas>
+  </div>
+</div>
+
+<script>
+const API = "";
+const MONTHS = ["Feb","March","April","May","June","July"];
+const ls = (arr) => arr.sort((a,b)=>MONTHS.indexOf(a) - MONTHS.indexOf(b));
+const rgb = (h,s,l) => `hsl(${h} ${s}% ${l}%)`;
+
+function drawLine(canvas, labels, series) {
+  const c = canvas.getContext("2d"), W = canvas.width = canvas.clientWidth*2, H = canvas.height = canvas.clientHeight*2;
+  c.clearRect(0,0,W,H);
+  const {min,max} = (()=>{let mn=Infinity,mx=-Infinity;
+    series.forEach(s=>s.data.forEach(v=>{if(v<mn)mn=v;if(v>mx)mx=v;}));
+    return {min:Math.floor(mn-2), max:Math.ceil(mx+2)}})();
+  const pad=30, iw=W-pad*2, ih=H-pad*2;
+  const x=i=>pad+iw*i/(labels.length-1), y=v=>pad+ih*(1-(v-min)/(max-min));
+  c.font="11px sans-serif"; c.strokeStyle="#475569"; c.fillStyle="#94a3b8";
+  for(let i=0;i<=4;i++){const v=min+(max-min)*i/4; c.beginPath();c.moveTo(pad,y(v));c.lineTo(W-pad,y(v));c.stroke();c.fillText(String(Math.round(v)),5,y(v));}
+  labels.forEach((l,i)=>{c.fillText(l,x(i),H-pad+16);});
+  series.forEach(s=>{ c.strokeStyle=s.color; c.lineWidth=2; c.beginPath();
+    s.data.forEach((v,i)=>{ i?c.lineTo(x(i),y(v)):c.moveTo(x(i),y(v)); }); c.stroke();
+    s.data.forEach((v,i)=>{ c.beginPath();c.arc(x(i),y(v),3,0,7);c.fillStyle=s.color;c.fill(); }); });
+}
+
+function drawBars(canvas, labels, values, color="hsl(199 89% 48%)") {
+  const c = canvas.getContext("2d"), W = canvas.width = canvas.clientWidth*2, H = canvas.height = canvas.clientHeight*2;
+  c.clearRect(0,0,W,H); const pad=40, iw=W-pad*2, ih=H-pad;
+  const mx=Math.max(...values)*1.1; const n=labels.length;
+  const bw=Math.min(40, iw/n*0.7);
+  c.font="10px sans-serif"; c.fillStyle="#94a3b8";
+  labels.forEach((l,i)=>{ const h=ih*Math.max(0,values[i])/mx; const bx=pad+iw*i/n; const by=H-pad-h;
+    c.fillStyle=color; c.fillRect(bx, by, bw, h);
+    c.fillStyle="#94a3b8"; c.fillText(l, bx, H-pad+14);
+    c.fillStyle="#e2e8f0"; c.fillText(String(Math.round(values[i])), bx, by-4); });
+  c.strokeStyle="#475569"; c.beginPath(); c.moveTo(pad,0); c.lineTo(pad,H-pad); c.stroke();
+}
+
+async function loadJSON(u){ const r=await fetch(API+u); if(!r.ok) throw new Error(u+": "+r.status); return r.json(); }
+
+async function init() {
+  const [nat, sec, sta, projects] = await Promise.all([
+    loadJSON("/api/trends/national"),
+    loadJSON("/api/baselines/sectors"),
+    loadJSON("/api/baselines/states"),
+    loadJSON("/api/projects")]);
+
+  // REAL national trend LINE (the new panel)
+  const natm = ls(nat.map(n=>n.month));
+  drawLine(document.getElementById("natChart"), natm,
+    [{label:"national overrun %", color:"#38bdf8", data:natm.map(m=>nat.find(n=>n.month===m).national_cost_overrun_pct)}]);
+
+  const secTop = [...sec].sort((a,b)=>b.avg_cost_overrun_pct-a.avg_cost_overrun_pct).slice(0,12);
+  drawBars(document.getElementById("sectorChart"), secTop.map(s=>s.sector), secTop.map(s=>s.avg_cost_overrun_pct), "hsl(190 90% 60%)");
+
+  const staTop = [...sta].sort((a,b)=>Math.abs(b.avg_cost_overrun_pct)-Math.abs(a.avg_cost_overrun_pct)).slice(0,15);
+  drawBars(document.getElementById("stateChart"), staTop.map(s=>s.state), staTop.map(s=>s.avg_cost_overrun_pct), "hsl(50 90% 60%)");
+
+  // project selector
+  const sel = document.getElementById("proj");
+  const pidOf = (p) => p.id || p.project_id;   // newer cards expose `id`
+  projects.forEach(p=>{ const pid0=pidOf(p); const o=document.createElement("option"); o.value=pid0; o.textContent=`${pid0} | ${p.state} | ${p.sector}`; sel.appendChild(o); });
+  sel.addEventListener("change", ()=>showProject(sel.value));
+  if (sel.value) await showProject(sel.value);
+}
+
+async function showProject(id) {
+  const r = await loadJSON(`/api/projects/${id}`);
+  const num = document.getElementById("riskNum");
+  num.textContent = r.final_risk_score;
+  num.className = "num "+r.risk_level;
+  const lvl = document.getElementById("riskLevel");
+  lvl.textContent = r.risk_level; lvl.className = r.risk_level;
+  document.getElementById("copBar").style.width = (r.cop_prob*100)+"%";
+  document.getElementById("copVal").textContent = (r.cop_prob*100).toFixed(1)+"%";
+  document.getElementById("topBar").style.width = (r.top_prob*100)+"%";
+  document.getElementById("topVal").textContent = (r.top_prob*100).toFixed(1)+"%";
+  document.getElementById("secBase").textContent = r.sector_risk_baseline+"%";
+  document.getElementById("staBase").textContent = r.state_risk_baseline+"%";
+  document.getElementById("shap").innerHTML = r.shap_drivers
+    .map(d=>`<li>${d.feature}: <b>${d.shap_value>0?"+":""}${d.shap_value}</b></li>`).join("");
+  document.getElementById("warnings").innerHTML =
+    r.warnings.length ? r.warnings.map(w=>`<span class="chip ${w.severity}">${w.warning_type} (${w.signal_value})</span>`).join("")
+                      : `<span class="chip Low">no warnings</span>`;
+  document.getElementById("trajProj").textContent = id;
+
+  const tl = await loadJSON(`/api/projects/${id}/timeline`);
+  const months = ls(tl.map(t=>t.month));
+  drawLine(document.getElementById("trajChart"), months, [
+    {label:"physical %", color:"#4ade80", data:months.map(m=>tl.find(t=>t.month===m).physical_progress_pct)},
+    {label:"financial %", color:"#a78bfa", data:months.map(m=>tl.find(t=>t.month===m).financial_progress_pct)},
+    {label:"overrun %", color:"#f87171", data:months.map(m=>tl.find(t=>t.month===m).cost_overrun_to_date_pct)},
+  ]);
+}
+
+init().catch(e=>{ document.body.insertAdjacentHTML("beforeend", `<pre style="color:#f87171">${e}</pre>`); });
+</script>
+</body>
+</html>

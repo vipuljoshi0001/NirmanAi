@@ -1,0 +1,8 @@
+node_modules/
+build/
+# dist/ is intentionally COMMITTED so Render can serve the React app without npm
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example

@@ -1,0 +1,35 @@
+### Python ###
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+### Logs ###
+*.log
+*.err.log
+
+### Environment / secrets ###
+.env
+.env.*
+!.env.example
+
+### Node / frontend build ###
+node_modules/
+frontend/node_modules/
+# NOTE: frontend/dist/ is intentionally COMMITTED so Render (and any host
+# without Node in the build image) can serve the React app without npm.
+frontend/build/
+frontend/coverage/
+frontend/*.tsbuildinfo
+
+### Uploads ###
+uploads/
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### IDE ###
+.vscode/
+.idea/
