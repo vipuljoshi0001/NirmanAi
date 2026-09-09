@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Search,
   LayoutGrid,
@@ -34,10 +35,18 @@ type ProjectForm = {
 }
 
 export default function Projects() {
-  const [query, setQuery] = useState('')
+  const [searchParams] = useSearchParams()
+  const [query, setQuery] = useState(() => searchParams.get('q') || searchParams.get('search') || '')
   const [sector, setSector] = useState<Sector | 'All Sectors'>('All Sectors')
   const [sectorOpen, setSectorOpen] = useState(false)
   const [projectList, setProjectList] = useState<Project[]>([])
+
+  useEffect(() => {
+    const q = searchParams.get('q') || searchParams.get('search')
+    if (q !== null) {
+      setQuery(q)
+    }
+  }, [searchParams])
   const [loading, setLoading] = useState(true)
   const [showAddProject, setShowAddProject] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
