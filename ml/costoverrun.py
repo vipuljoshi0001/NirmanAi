@@ -34,6 +34,10 @@ import scoring  # noqa: E402
 
 DB = "project_monitoring.db"
 
+
+# --------------------------------------------------------------------------- #
+# Library API
+# --------------------------------------------------------------------------- #
 def score_project(project_id, month=None):
     """Score an existing project (latest snapshot, or a specific month)."""
     return scoring.score_project(project_id, month=month)

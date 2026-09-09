@@ -1,4 +1,8 @@
+"""Step 5 layer: model-based risk scores, SHAP interpretability, early warnings.
 
+Run after build_database.py and train_models.py. Writes model_risk_scores,
+adds model_high_risk warnings, saves SHAP figures.
+"""
 import sqlite3
 
 import matplotlib
