@@ -59,7 +59,7 @@ export default function ProjectCard({ project }: { project: Project }) {
               className="h-full rounded-full transition-all duration-500 bg-emerald-500"
               style={{
                 width: `${project.physicalProgress}%`,
-                background: '#3feb56',
+                background: '#26b539ff',
                 boxShadow: '0 0 8px rgba(34, 197, 94, 0.45)',
               }}
             />
