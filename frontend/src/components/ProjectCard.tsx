@@ -11,14 +11,14 @@ const healthColor = (health: number) => {
 
 const accentBar: Record<Project['status'], string> = {
   'On Track': 'bg-emerald-400',
-  Watch: 'bg-amber-400',
+  'Watch': 'bg-amber-400',
   'At Risk': 'bg-red-400',
 }
 
 export default function ProjectCard({ project }: { project: Project }) {
   return (
     <div className="relative overflow-hidden rounded-xl bg-white dark:bg-ink-900 border border-slate-200 dark:border-white/5 p-5 flex flex-col gap-4 shadow-sm dark:shadow-none">
-      
+
       <span
         className={`absolute inset-x-0 top-0 h-[3px] ${accentBar[project.status]}`}
       />
@@ -52,13 +52,15 @@ export default function ProjectCard({ project }: { project: Project }) {
         </div>
 
         <div className="flex items-center gap-3">
-          
+
           {/* Progress bar */}
           <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
             <div
               className="h-full rounded-full transition-all duration-500 bg-emerald-500"
               style={{
                 width: `${project.physicalProgress}%`,
+                background: '#3feb56',
+                boxShadow: '0 0 8px rgba(34, 197, 94, 0.45)',
               }}
             />
           </div>
@@ -70,9 +72,9 @@ export default function ProjectCard({ project }: { project: Project }) {
       </div>
 
       <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-white/5">
-        <span className="flex items-center gap-1.5 text-xs text-amber-500 dark:text-amber-400 font-tabular">
+        <span className="flex items-center gap-1.5 text-xs text-amber-500 dark:text-amber-400">
           <AlertTriangle size={12} />
-          Cost {project.costVariance > 0 ? `+${project.costVariance}%` : `${project.costVariance}%`} &nbsp; Slip {project.timeVariance > 0 ? `+${project.timeVariance} mo` : `${project.timeVariance} mo`}
+          Cost {project.costVariance}% &nbsp; Time {project.timeVariance}%
         </span>
 
         <Link
