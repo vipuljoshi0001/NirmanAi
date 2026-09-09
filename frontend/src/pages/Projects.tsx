@@ -187,42 +187,47 @@ export default function Projects() {
       </div>
 
       {/* Filter Bar */}
-      <div className="rounded-xl bg-ink-900 p-3 flex flex-wrap items-center gap-3 shadow-md">
-        <div className="flex items-center gap-2.5 flex-1 min-w-[240px] rounded-lg bg-white/5 px-3.5 py-2.5">
-          <Search size={16} className="text-slate-400 flex-shrink-0" />
+      <div className="rounded-xl bg-white dark:bg-ink-900 border border-slate-200 dark:border-white/5 p-3 flex flex-wrap items-center gap-3 shadow-sm dark:shadow-md transition-colors">
+        <div className="flex items-center gap-2.5 flex-1 min-w-[240px] rounded-lg bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/5 px-3.5 py-2.5 transition-all focus-within:border-cyan-500/50 focus-within:ring-1 focus-within:ring-cyan-500/20">
+          <Search size={16} className="text-slate-400 shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search project, ministry, state or ID (e.g. PRJ-0001)..."
-            className="bg-transparent text-sm text-white placeholder:text-slate-500 outline-none flex-1"
+            className="bg-transparent text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none flex-1"
           />
         </div>
 
         <div className="relative">
           <button
             onClick={() => setSectorOpen((v) => !v)}
-            className="flex items-center justify-between gap-3 rounded-lg bg-white/5 px-3.5 py-2.5 text-sm text-white min-w-[170px]"
+            className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/5 px-3.5 py-2.5 text-sm text-slate-800 dark:text-white hover:bg-slate-100 dark:hover:bg-white/10 min-w-[170px] transition-colors"
           >
-            {sector}
+            <span>{sector}</span>
             <span className="text-slate-400">▾</span>
           </button>
           {sectorOpen && (
-            <div className="absolute z-20 mt-1 w-full rounded-lg bg-ink-950 border border-white/10 overflow-hidden shadow-2xl">
-              {sectors.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => {
-                    setSector(s)
-                    setSectorOpen(false)
-                  }}
-                  className={`block w-full text-left px-3.5 py-2.5 text-sm hover:bg-white/10 ${
-                    s === sector ? 'bg-cyan-500 text-white font-semibold' : 'text-slate-200'
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setSectorOpen(false)} />
+              <div className="absolute z-20 mt-1 w-full rounded-lg bg-white dark:bg-ink-950 border border-slate-200 dark:border-white/10 overflow-hidden shadow-xl dark:shadow-2xl">
+                {sectors.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => {
+                      setSector(s)
+                      setSectorOpen(false)
+                    }}
+                    className={`block w-full text-left px-3.5 py-2.5 text-sm transition-colors ${
+                      s === sector
+                        ? 'bg-cyan-500 text-white font-semibold'
+                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
         </div>
 
