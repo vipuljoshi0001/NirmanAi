@@ -10,11 +10,14 @@ import StateAnalysis from './pages/StateAnalysis'
 import Reports from './pages/Reports'
 
 export default function App() {
-  // 1. Initialize theme checking system memory (localStorage) or browser defaults
+  // 1. Default loading mode is light mode unless user explicitly chose dark mode
   const [darkMode, setDarkMode] = useState(() => {
-    const savedTheme = localStorage.getItem('theme')
-    return savedTheme === 'dark' || 
-      (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    const savedTheme = localStorage.getItem('theme_preference')
+    if (savedTheme) {
+      return savedTheme === 'dark'
+    }
+    // Default to light mode (false)
+    return false
   })
 
   // 2. Add or remove the 'dark' global modifier class on the main root document
@@ -23,9 +26,11 @@ export default function App() {
     if (darkMode) {
       root.classList.add('dark')
       localStorage.setItem('theme', 'dark')
+      localStorage.setItem('theme_preference', 'dark')
     } else {
       root.classList.remove('dark')
       localStorage.setItem('theme', 'light')
+      localStorage.setItem('theme_preference', 'light')
     }
   }, [darkMode])
 
