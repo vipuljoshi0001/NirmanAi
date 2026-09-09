@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: "npm --prefix frontend install && npm --prefix frontend run build && pip install -r requirements.txt"
-    startCommand: "uvicorn api.py:app --host 0.0.0.0 --port $PORT"
+    startCommand: "uvicorn api:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
