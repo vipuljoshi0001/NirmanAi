@@ -9,6 +9,11 @@ import type {
   SectorBaselineItem,
   StateBaselineItem,
   StateDetailData,
+  AuthUser,
+  Contractor,
+  ContractorProject,
+  ContractorSubmission,
+  GeofenceLamina,
 } from '../types'
 import { projects as mockProjects, states as mockStates } from '../data/mockData'
 import { stateCentroids } from '../data/stateCentroids'
@@ -393,4 +398,221 @@ export async function getStateDetail(stateName: string): Promise<StateDetailData
     }
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Contractor Portal, Geofence Lamina & Unified Authentication API
+ * ------------------------------------------------------------------ */
+
+export const FALLBACK_CONTRACTORS: Contractor[] = [
+  {
+    contractor_id: 'CNT-LT-01',
+    company_name: 'Larsen & Toubro Heavy Civil Infra',
+    contact_person: 'S. Ramanathan (VP Projects)',
+    email: 'ramanathan.s@lntecc.com',
+    phone: '+91 22 6752 5656',
+    rating: 4.8,
+    active_contracts: 6,
+  },
+  {
+    contractor_id: 'CNT-AF-02',
+    company_name: 'Afcons Infrastructure Limited',
+    contact_person: 'Rajiv K. Menon (Chief Eng)',
+    email: 'ops.infra@afcons.com',
+    phone: '+91 22 6719 1000',
+    rating: 4.6,
+    active_contracts: 5,
+  },
+  {
+    contractor_id: 'CNT-TP-03',
+    company_name: 'Tata Projects Limited',
+    contact_person: 'Ananya Sharma (Project Director)',
+    email: 'asharma@tataprojects.com',
+    phone: '+91 40 6623 8800',
+    rating: 4.7,
+    active_contracts: 5,
+  },
+  {
+    contractor_id: 'CNT-DB-04',
+    company_name: 'Dilip Buildcon Limited',
+    contact_person: 'Rohan Suryavanshi (Exec Director)',
+    email: 'highways@dilipbuildcon.co.in',
+    phone: '+91 755 402 9999',
+    rating: 4.4,
+    active_contracts: 4,
+  },
+  {
+    contractor_id: 'CNT-ME-05',
+    company_name: 'Megha Engineering & Infrastructures Ltd',
+    contact_person: 'V. K. Reddy (Director Ops)',
+    email: 'vkreddy@meil.in',
+    phone: '+91 40 4433 6700',
+    rating: 4.5,
+    active_contracts: 4,
+  },
+]
+
+export function generateClientLamina(centerLat: number, centerLng: number, radiusKm = 3.5): [number, number][] {
+  const coords: [number, number][] = []
+  const latScale = radiusKm / 111.0
+  const lngScale = radiusKm / (111.0 * Math.max(0.1, Math.cos((centerLat * Math.PI) / 180)))
+  for (let i = 0; i < 6; i++) {
+    const angle = (2 * Math.PI * i) / 6
+    const rMod = 0.85 + 0.3 * ((i % 3) / 2.0)
+    const pLat = Number((centerLat + Math.sin(angle) * latScale * rMod).toFixed(6))
+    const pLng = Number((centerLng + Math.cos(angle) * lngScale * rMod).toFixed(6))
+    coords.push([pLat, pLng])
+  }
+  return coords
+}
+
+export function isPointInsideLamina(lat: number, lng: number, polygon: [number, number][]): boolean {
+  if (!polygon || polygon.length < 3) return false
+  let inside = false
+  const n = polygon.length
+  let p1Lat = polygon[0][0]
+  let p1Lng = polygon[0][1]
+
+  for (let i = 1; i <= n; i++) {
+    const p2Lat = polygon[i % n][0]
+    const p2Lng = polygon[i % n][1]
+    if (Math.min(p1Lat, p2Lat) < lat && lat <= Math.max(p1Lat, p2Lat)) {
+      if (lng <= Math.max(p1Lng, p2Lng)) {
+        let xInters = p1Lng
+        if (p1Lat !== p2Lat) {
+          xInters = ((lat - p1Lat) * (p2Lng - p1Lng)) / (p2Lat - p1Lat) + p1Lng
+        }
+        if (p1Lng === p2Lng || lng <= xInters) {
+          inside = !inside
+        }
+      }
+    }
+    p1Lat = p2Lat
+    p1Lng = p2Lng
+  }
+  return inside
+}
+
+export async function authLogin(
+  role: 'admin' | 'contractor',
+  contractorId?: string
+): Promise<{ status: string; role: string; user: AuthUser; token: string }> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, contractor_id: contractorId || 'CNT-LT-01' }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Backend login unavailable, using client fallback', err)
+    if (role === 'admin') {
+      return {
+        status: 'success',
+        role: 'admin',
+        user: {
+          id: 'ADM-DG-01',
+          name: 'Director General',
+          company: 'Govt of India (MoSPI Oversight)',
+          role: 'admin',
+          title: 'Director General / Oversight Administrator',
+          email: 'dg.oversight@gov.in',
+          agency: 'National Infrastructure Monitoring Authority',
+        },
+        token: 'fallback_admin_token',
+      }
+    }
+    const c = FALLBACK_CONTRACTORS.find((x) => x.contractor_id === contractorId) || FALLBACK_CONTRACTORS[0]
+    return {
+      status: 'success',
+      role: 'contractor',
+      user: {
+        id: c.contractor_id,
+        name: c.contact_person,
+        company: c.company_name,
+        role: 'contractor',
+        email: c.email,
+        phone: c.phone,
+        rating: c.rating,
+      },
+      token: `fallback_token_${c.contractor_id}`,
+    }
+  }
+}
+
+export async function getContractors(): Promise<Contractor[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/contractors`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Backend unavailable, using fallback contractors', err)
+    return FALLBACK_CONTRACTORS
+  }
+}
+
+export async function getContractorProjects(contractorId: string): Promise<ContractorProject[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/contractors/${contractorId}/projects`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Backend unavailable, using fallback contractor projects', err)
+    const c = FALLBACK_CONTRACTORS.find((x) => x.contractor_id === contractorId) || FALLBACK_CONTRACTORS[0]
+    // Filter or match projects from mock
+    return mockProjects.slice(0, 4).map((p, idx) => {
+      const lat = 19.012 + idx * 0.15
+      const lng = 72.831 + idx * 0.2
+      return {
+        ...p,
+        contractor: c,
+        geofence: {
+          project_id: p.id,
+          center_lat: lat,
+          center_lng: lng,
+          radius_km: 3.5,
+          boundary_lamina: generateClientLamina(lat, lng, 3.5),
+        },
+      }
+    })
+  }
+}
+
+export async function getProjectGeofence(projectId: string): Promise<GeofenceLamina> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/projects/${projectId}/geofence`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Failed to fetch geofence, using fallback', err)
+    return {
+      project_id: projectId,
+      center_lat: 19.076,
+      center_lng: 72.878,
+      radius_km: 3.5,
+      boundary_lamina: generateClientLamina(19.076, 72.878, 3.5),
+    }
+  }
+}
+
+export async function submitContractorProgress(formData: FormData): Promise<any> {
+  const res = await fetch(`${BASE_URL}/api/contractor/submit-progress`, {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to submit progress`)
+  return await res.json()
+}
+
+export async function getContractorSubmissions(contractorId: string): Promise<ContractorSubmission[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/contractor/${contractorId}/submissions`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Failed to fetch submissions, returning empty', err)
+    return []
+  }
+}
+
 

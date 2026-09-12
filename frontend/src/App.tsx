@@ -8,6 +8,8 @@ import Intelligence from './pages/Intelligence'
 import MapView from './pages/MapView'
 import StateAnalysis from './pages/StateAnalysis'
 import Reports from './pages/Reports'
+import ContractorPanel from './pages/ContractorPanel'
+import { AuthProvider } from './context/AuthContext'
 
 export default function App() {
   // 1. Default loading mode is light mode unless user explicitly chose dark mode
@@ -35,17 +37,21 @@ export default function App() {
   }, [darkMode])
 
   return (
-    <Routes>
-      {/* 3. Pass dark mode state down as props so the toggle button can live inside Layout */}
-      <Route element={<Layout darkMode={darkMode} setDarkMode={setDarkMode} />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/projects" element={<Projects />} />
-        <Route path="/projects/:id" element={<ProjectDetail />} />
-        <Route path="/intelligence" element={<Intelligence />} />
-        <Route path="/state-analysis" element={<StateAnalysis />} />
-        <Route path="/map" element={<MapView />} />
-        <Route path="/reports" element={<Reports />} />
-      </Route>
-    </Routes>
+    <AuthProvider>
+      <Routes>
+        {/* 3. Pass dark mode state down as props so the toggle button can live inside Layout */}
+        <Route element={<Layout darkMode={darkMode} setDarkMode={setDarkMode} />}>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/projects/:id" element={<ProjectDetail />} />
+          <Route path="/intelligence" element={<Intelligence />} />
+          <Route path="/state-analysis" element={<StateAnalysis />} />
+          <Route path="/map" element={<MapView />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/contractor" element={<ContractorPanel />} />
+        </Route>
+      </Routes>
+    </AuthProvider>
   )
 }
+

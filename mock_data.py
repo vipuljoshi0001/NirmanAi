@@ -212,3 +212,139 @@ def demo_by_id(project_id: str) -> Optional[dict]:
         if p["id"] == project_id or p["id"] == project_id.upper():
             return p
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Contractors & Geofence Lamina Directory
+# --------------------------------------------------------------------------- #
+
+CONTRACTORS: List[dict] = [
+    {
+        "contractor_id": "CNT-LT-01",
+        "company_name": "Larsen & Toubro Heavy Civil Infra",
+        "contact_person": "S. Ramanathan (VP Projects)",
+        "email": "ramanathan.s@lntecc.com",
+        "phone": "+91 22 6752 5656",
+        "rating": 4.8,
+        "active_contracts": 6,
+    },
+    {
+        "contractor_id": "CNT-AF-02",
+        "company_name": "Afcons Infrastructure Limited",
+        "contact_person": "Rajiv K. Menon (Chief Eng)",
+        "email": "ops.infra@afcons.com",
+        "phone": "+91 22 6719 1000",
+        "rating": 4.6,
+        "active_contracts": 5,
+    },
+    {
+        "contractor_id": "CNT-TP-03",
+        "company_name": "Tata Projects Limited",
+        "contact_person": "Ananya Sharma (Project Director)",
+        "email": "asharma@tataprojects.com",
+        "phone": "+91 40 6623 8800",
+        "rating": 4.7,
+        "active_contracts": 5,
+    },
+    {
+        "contractor_id": "CNT-DB-04",
+        "company_name": "Dilip Buildcon Limited",
+        "contact_person": "Rohan Suryavanshi (Exec Director)",
+        "email": "highways@dilipbuildcon.co.in",
+        "phone": "+91 755 402 9999",
+        "rating": 4.4,
+        "active_contracts": 4,
+    },
+    {
+        "contractor_id": "CNT-ME-05",
+        "company_name": "Megha Engineering & Infrastructures Ltd",
+        "contact_person": "V. K. Reddy (Director Ops)",
+        "email": "vkreddy@meil.in",
+        "phone": "+91 40 4433 6700",
+        "rating": 4.5,
+        "active_contracts": 4,
+    },
+]
+
+# Explicit showcase assignments (others resolved deterministically)
+EXPLICIT_ASSIGNMENTS: Dict[str, str] = {
+    "INF-2026-MH-892": "CNT-LT-01",
+    "DM-MH-001": "CNT-LT-01",
+    "DM-DL-003": "CNT-LT-01",
+    "PRJ-0001": "CNT-LT-01",
+    "PRJ-0006": "CNT-LT-01",
+    "PRJ-0011": "CNT-LT-01",
+    "INF-2026-DL-412": "CNT-AF-02",
+    "DM-GJ-002": "CNT-AF-02",
+    "DM-KA-005": "CNT-AF-02",
+    "PRJ-0002": "CNT-AF-02",
+    "PRJ-0007": "CNT-AF-02",
+    "INF-2026-UP-184": "CNT-TP-03",
+    "DM-UP-004": "CNT-TP-03",
+    "DM-TN-006": "CNT-TP-03",
+    "PRJ-0003": "CNT-TP-03",
+    "PRJ-0008": "CNT-TP-03",
+    "INF-2026-GJ-771": "CNT-DB-04",
+    "DM-WB-007": "CNT-DB-04",
+    "DM-HR-010": "CNT-DB-04",
+    "PRJ-0004": "CNT-DB-04",
+    "PRJ-0009": "CNT-DB-04",
+    "INF-2026-KL-308": "CNT-ME-05",
+    "DM-TG-008": "CNT-ME-05",
+    "DM-RJ-009": "CNT-ME-05",
+    "PRJ-0005": "CNT-ME-05",
+    "PRJ-0010": "CNT-ME-05",
+}
+
+
+def get_contractor(contractor_id: str) -> Optional[dict]:
+    """Return contractor record by ID."""
+    for c in CONTRACTORS:
+        if c["contractor_id"].upper() == contractor_id.upper():
+            return {**c}
+    return None
+
+
+def get_contractor_for_project(project_id: str) -> dict:
+    """Return the assigned contractor for any project (deterministic fallback)."""
+    pid_norm = project_id.strip()
+    if pid_norm in EXPLICIT_ASSIGNMENTS:
+        cid = EXPLICIT_ASSIGNMENTS[pid_norm]
+        c = get_contractor(cid)
+        if c:
+            return c
+    # Fallback to seeded hash
+    idx = abs(hash(pid_norm)) % len(CONTRACTORS)
+    return {**CONTRACTORS[idx]}
+
+
+def geofence_for_project(project_id: str, state: str = "Maharashtra", radius_km: float = 3.5) -> dict:
+    """Generate or retrieve designated construction area lamina for a project.
+
+    Returns dict with center_lat, center_lng, radius_km, and boundary polygon vertices.
+    """
+    coords = None
+    demo = demo_by_id(project_id)
+    if demo:
+        coords = (demo["lat"], demo["lng"])
+    else:
+        coords = coordinates_for(project_id, state)
+    if coords is None:
+        centroid = get_state_centroid(state) or [20.5937, 78.9629]
+        coords = (centroid[0], centroid[1])
+
+    center_lat, center_lng = coords
+    from verification_pipeline import generate_lamina_polygon
+    polygon = generate_lamina_polygon(center_lat, center_lng, radius_km=radius_km, vertices=6)
+
+    return {
+        "project_id": project_id,
+        "center_lat": center_lat,
+        "center_lng": center_lng,
+        "radius_km": radius_km,
+        "boundary_lamina": polygon,
+        "boundary_geojson": {
+            "type": "Polygon",
+            "coordinates": [[[pt[1], pt[0]] for pt in polygon] + [[polygon[0][1], polygon[0][0]]]]
+        },
+    }

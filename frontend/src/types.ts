@@ -177,3 +177,64 @@ export interface ReportDef {
   cadence: string
 }
 
+export interface Contractor {
+  contractor_id: string
+  company_name: string
+  contact_person: string
+  email: string
+  phone: string
+  rating?: number
+  active_contracts?: number
+}
+
+export interface GeofenceLamina {
+  project_id: string
+  center_lat: number
+  center_lng: number
+  radius_km: number
+  boundary_lamina: [number, number][]
+  boundary_geojson?: {
+    type: string
+    coordinates: number[][][]
+  }
+}
+
+export interface ContractorProject extends Project {
+  contractor?: Contractor
+  geofence?: GeofenceLamina
+}
+
+export interface ContractorSubmission {
+  id?: number
+  submission_id: string
+  project_id: string
+  contractor_id: string
+  physical_progress_pct?: number
+  financial_expenditure_cr?: number
+  notes?: string
+  photo_url?: string
+  gps_lat?: number
+  gps_lng?: number
+  inside_geofence: number | boolean
+  verification_status: string
+  counts_towards_progress: number | boolean
+  submitted_at: string
+  message?: string
+  details_json?: string
+}
+
+export type UserRole = 'admin' | 'contractor' | 'guest'
+
+export interface AuthUser {
+  id: string
+  name: string
+  company?: string
+  role: UserRole
+  email: string
+  title?: string
+  phone?: string
+  agency?: string
+  rating?: number
+}
+
+

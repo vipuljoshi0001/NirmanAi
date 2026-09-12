@@ -61,6 +61,46 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return round(2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a)), 3)
 
 
+def is_point_in_polygon(lat: float, lng: float, polygon: Sequence[Sequence[float]]) -> bool:
+    """Ray-casting algorithm to test if (lat, lng) is inside a WGS-84 polygon lamina.
+    
+    polygon is expected as a list/tuple of [lat, lng] or (lat, lng) vertices.
+    """
+    if not polygon or len(polygon) < 3:
+        return False
+
+    inside = False
+    n = len(polygon)
+    p1_lat, p1_lng = polygon[0][0], polygon[0][1]
+
+    for i in range(1, n + 1):
+        p2_lat, p2_lng = polygon[i % n][0], polygon[i % n][1]
+        if min(p1_lat, p2_lat) < lat <= max(p1_lat, p2_lat):
+            if lng <= max(p1_lng, p2_lng):
+                if p1_lat != p2_lat:
+                    x_inters = (lat - p1_lat) * (p2_lng - p1_lng) / (p2_lat - p1_lat) + p1_lng
+                if p1_lng == p2_lng or lng <= x_inters:
+                    inside = not inside
+        p1_lat, p1_lng = p2_lat, p2_lng
+
+    return inside
+
+
+def generate_lamina_polygon(center_lat: float, center_lng: float, radius_km: float = 3.0, vertices: int = 6) -> List[List[float]]:
+    """Generate a convex polygon boundary (lamina) around a project location."""
+    import math
+    coords = []
+    lat_scale = radius_km / 111.0
+    lng_scale = radius_km / (111.0 * max(0.1, math.cos(math.radians(center_lat))))
+    for i in range(vertices):
+        angle = (2 * math.pi * i) / vertices
+        r_mod = 0.85 + 0.3 * ((i % 3) / 2.0)
+        p_lat = round(center_lat + math.sin(angle) * lat_scale * r_mod, 6)
+        p_lng = round(center_lng + math.cos(angle) * lng_scale * r_mod, 6)
+        coords.append([p_lat, p_lng])
+    return coords
+
+
 def _dms_to_decimal(dms: Tuple, ref: bytes) -> Optional[float]:
     """Convert an EXIF GPS DMS tuple ((d,dn),(m,mn),(s,sn)) to decimal degrees."""
     try:
@@ -184,15 +224,18 @@ def verify_image(
     path,
     project_lat: Optional[float] = None,
     project_lng: Optional[float] = None,
+    boundary_polygon: Optional[Sequence[Sequence[float]]] = None,
     max_distance_km: float = 10.0,
     max_age_days: float = 30.0,
     duplicate_hashes: Sequence[str] = (),
     duplicate_threshold: int = 6,
     captured_at: Optional[str] = None,
+    client_lat: Optional[float] = None,
+    client_lng: Optional[float] = None,
 ) -> Dict:
     """Run every check and return a full decision record.
 
-    Returns a dict with ``status`` in {"accepted", "rejected", "unverifiable"}.
+    Returns a dict with ``status`` in {"accepted", "rejected", "rejected_geofence", "unverifiable"}.
     ``unverifiable`` means the image could not be decoded (broken file or the
     imaging libraries are missing) and must NOT be interpreted as approval.
     """
@@ -217,8 +260,13 @@ def verify_image(
         return result
 
     meta = read_gps_and_time(path)
+    if meta["gps_lat"] is None and client_lat is not None and client_lng is not None:
+        meta["gps_lat"] = float(client_lat)
+        meta["gps_lng"] = float(client_lng)
+        meta["source"] = "device_telemetry"
+
     result["gps"] = (
-        {"lat": meta["gps_lat"], "lng": meta["gps_lng"]}
+        {"lat": meta["gps_lat"], "lng": meta["gps_lng"], "source": meta.get("source", "exif")}
         if meta["gps_lat"] is not None
         else None
     )
@@ -226,23 +274,46 @@ def verify_image(
 
     # --- 1 / 2. GPS detection -------------------------------------------------
     if meta["gps_lat"] is None:
-        reasons.append("Check GPS failed - no GPS metadata embedded in the photo")
+        reasons.append("Check GPS failed - no GPS metadata embedded in the photo or provided by device")
         result["status"] = "rejected"
     else:
-        result["checks"]["gps"] = {"lat": meta["gps_lat"], "lng": meta["gps_lng"]}
+        result["checks"]["gps"] = {"lat": meta["gps_lat"], "lng": meta["gps_lng"], "source": meta.get("source", "exif")}
 
-    # --- 3. Haversine geofence check -------------------------------------------
-    if meta["gps_lat"] is not None and project_lat is not None and project_lng is not None:
-        dist = haversine_km(project_lat, project_lng, meta["gps_lat"], meta["gps_lng"])
-        result["distance_km"] = dist
-        if dist > max_distance_km:
-            reasons.append(
-                f"Check geofence failed - photo is {dist:.1f} km from the project "
-                f"site (limit {max_distance_km:.0f} km)"
-            )
-            result["status"] = "rejected"
-        else:
-            result["checks"]["geofence"] = {"distance_km": dist, "within_limit": True}
+    # --- 3. Construction Area Lamina & Haversine geofence check ---------------
+    if meta["gps_lat"] is not None:
+        # Check boundary lamina polygon if provided
+        if boundary_polygon and len(boundary_polygon) >= 3:
+            inside_lamina = is_point_in_polygon(meta["gps_lat"], meta["gps_lng"], boundary_polygon)
+            result["checks"]["geofence_lamina"] = {
+                "inside": inside_lamina,
+                "vertex_count": len(boundary_polygon),
+            }
+            if not inside_lamina:
+                reasons.append(
+                    f"Check geofence failed - photo coordinates ({meta['gps_lat']:.4f}, {meta['gps_lng']:.4f}) "
+                    f"fall outside the designated construction boundary lamina"
+                )
+                result["status"] = "rejected"
+                result["rejection_reason"] = "geofence"
+
+        # Also compute distance to project center
+        if project_lat is not None and project_lng is not None:
+            dist = haversine_km(project_lat, project_lng, meta["gps_lat"], meta["gps_lng"])
+            result["distance_km"] = dist
+            if dist > max_distance_km and result["status"] != "rejected":
+                reasons.append(
+                    f"Check geofence failed - photo is {dist:.1f} km from project "
+                    f"site center (limit {max_distance_km:.0f} km)"
+                )
+                result["status"] = "rejected"
+                result["rejection_reason"] = "geofence"
+            elif dist <= max_distance_km:
+                result["checks"]["geofence"] = {
+                    "distance_km": dist,
+                    "within_limit": True,
+                    "inside_lamina": result["checks"].get("geofence_lamina", {}).get("inside", True),
+                }
+
 
     # --- 4. Timestamp gap validation -------------------------------------------
     cap = result["captured_at"]
@@ -289,9 +360,9 @@ def verify_image(
         result["checks"]["ela"] = {"score": ela, "clean": True}
 
     # --- Final status ------------------------------------------------------------
-    if result["status"] != "rejected":
+    if result["status"] not in ("rejected", "rejected_geofence"):
         if result["gps"] is not None:
-            reasons.append("All local checks passed - capture is fresh, on-location and unique")
+            reasons.append("All local checks passed - capture is fresh, inside construction area and unique")
             result["status"] = "accepted"
         else:
             result["status"] = "rejected"

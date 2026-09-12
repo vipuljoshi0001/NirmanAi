@@ -13,11 +13,19 @@ import {
   Compass,
   Layers,
   FileText,
+  LogIn,
+  LogOut,
+  HardHat,
+  ShieldCheck,
+  User,
 } from 'lucide-react'
 import NotificationCenter from './NotificationCenter'
+import { LoginModal } from './LoginModal'
+import { useAuth } from '../context/AuthContext'
 import paimanaLogo from '../assests/paimana-logo.png'
 import { getProjects } from '../services/api'
 import type { Project } from '../types'
+
 
 const navItems = [
   { to: '/', label: 'Dashboard' },
@@ -54,12 +62,22 @@ interface LayoutProps {
 
 export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
   const navigate = useNavigate()
+  const { user, role, logout, setLoginModalOpen } = useAuth()
   const [notifOpen, setNotifOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [projects, setProjects] = useState<Project[]>([])
   const [loadingProjects, setLoadingProjects] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+
+  const currentNavItems = useMemo(() => {
+    if (role === 'contractor') {
+      return [...navItems, { to: '/contractor', label: 'Contractor Panel' }]
+    }
+    return navItems
+  }, [role])
+
 
   // Preload projects when search modal is opened
   useEffect(() => {
@@ -169,7 +187,7 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
             
             {/* Desktop Navigation Menu (hidden on mobile devices) */}
             <nav className="hidden md:flex items-center gap-4 lg:gap-6 overflow-x-auto whitespace-nowrap">
-              {navItems.map((item) => (
+              {currentNavItems.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
@@ -223,17 +241,136 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
               {notifOpen && <NotificationCenter onClose={() => setNotifOpen(false)} />}
             </div>
             
-            {/* User Profile - Director General avatar only (text removed) */}
-            <button 
-              className="p-1 rounded-full border border-slate-200/60 dark:border-ink-700/60 bg-white/40 dark:bg-ink-800/40 hover:bg-slate-100 dark:hover:bg-ink-700 transition-all shadow-sm cursor-pointer"
-              title="Director General"
-              aria-label="Director General profile"
-            >
-              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-white text-xs font-bold shadow-sm">
-                DG
-              </span>
-            </button>
+            {/* Unified User Authentication Controls */}
+            {role === 'guest' ? (
+              <button
+                onClick={() => setLoginModalOpen(true)}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-amber-500 to-brand-orange hover:from-amber-600 hover:to-brand-orangeDark text-white text-xs font-bold shadow-sm shadow-amber-500/20 transition-all cursor-pointer"
+              >
+                <LogIn size={13} />
+                <span>Login / Portal</span>
+              </button>
+            ) : role === 'contractor' ? (
+              <div className="relative">
+                <div className="flex items-center gap-1.5">
+                  <NavLink
+                    to="/contractor"
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 dark:bg-amber-500/20 text-brand-orange border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+                  >
+                    <HardHat size={14} />
+                    <span className="truncate max-w-[120px]">
+                      {user?.company ? user.company.split(' ')[0] : 'Contractor'}
+                    </span>
+                  </NavLink>
+                  <button
+                    onClick={() => setUserMenuOpen((v) => !v)}
+                    className="p-1 rounded-full border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900 transition-all shadow-sm cursor-pointer"
+                    title={user?.company || 'Contractor Profile'}
+                  >
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-amber-500 to-brand-orange text-white text-xs font-bold shadow-sm">
+                      {user?.company ? user.company.substring(0, 2).toUpperCase() : 'CP'}
+                    </span>
+                  </button>
+                </div>
+
+                {userMenuOpen && (
+                  <div className="absolute right-0 top-12 w-64 rounded-2xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-xl p-3 z-50 text-xs space-y-2.5 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="border-b border-slate-100 dark:border-ink-800 pb-2">
+                      <p className="font-bold text-slate-900 dark:text-white truncate">
+                        {user?.company}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {user?.name} (Contractor)
+                      </p>
+                      <span className="inline-block mt-1 font-mono text-[10px] px-2 py-0.5 rounded bg-slate-100 dark:bg-ink-800 text-slate-600 dark:text-slate-300">
+                        ID: {user?.id}
+                      </span>
+                    </div>
+                    <NavLink
+                      to="/contractor"
+                      onClick={() => setUserMenuOpen(false)}
+                      className="flex items-center gap-2 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-ink-800 text-slate-700 dark:text-slate-300 transition-colors"
+                    >
+                      <HardHat size={14} className="text-brand-orange" />
+                      <span>Contractor Workspace</span>
+                    </NavLink>
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false)
+                        setLoginModalOpen(true)
+                      }}
+                      className="w-full flex items-center gap-2 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-ink-800 text-slate-700 dark:text-slate-300 transition-colors text-left cursor-pointer"
+                    >
+                      <User size={14} className="text-cyan-500" />
+                      <span>Switch Account</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        logout()
+                        setUserMenuOpen(false)
+                      }}
+                      className="w-full flex items-center gap-2 p-2 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors text-left cursor-pointer border-t border-slate-100 dark:border-ink-800 pt-2"
+                    >
+                      <LogOut size={14} />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="relative">
+                <div className="flex items-center gap-1.5">
+                  <span className="hidden sm:inline-block px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-cyan-500/10 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
+                    Admin
+                  </span>
+                  <button
+                    onClick={() => setUserMenuOpen((v) => !v)}
+                    className="p-1 rounded-full border border-slate-200/60 dark:border-ink-700/60 bg-white/40 dark:bg-ink-800/40 hover:bg-slate-100 dark:hover:bg-ink-700 transition-all shadow-sm cursor-pointer"
+                    title="Director General (Admin)"
+                    aria-label="Director General profile"
+                  >
+                    <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-white text-xs font-bold shadow-sm">
+                      DG
+                    </span>
+                  </button>
+                </div>
+
+                {userMenuOpen && (
+                  <div className="absolute right-0 top-12 w-64 rounded-2xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-xl p-3 z-50 text-xs space-y-2.5 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="border-b border-slate-100 dark:border-ink-800 pb-2">
+                      <p className="font-bold text-slate-900 dark:text-white">
+                        {user?.name || 'Director General'}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {user?.title || 'National Oversight Administrator'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false)
+                        setLoginModalOpen(true)
+                      }}
+                      className="w-full flex items-center gap-2 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-ink-800 text-slate-700 dark:text-slate-300 transition-colors text-left cursor-pointer"
+                    >
+                      <User size={14} className="text-cyan-500" />
+                      <span>Switch Account</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        logout()
+                        setUserMenuOpen(false)
+                      }}
+                      className="w-full flex items-center gap-2 p-2 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 transition-colors text-left cursor-pointer border-t border-slate-100 dark:border-ink-800 pt-2"
+                    >
+                      <LogOut size={14} />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+
 
         </header>
       </div>
@@ -243,7 +380,7 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
         Sticky floating strip visible only on phone layout views to jump pages without changing code blocks!
       */}
       <div className="md:hidden fixed bottom-4 inset-x-4 z-40 bg-white/90 dark:bg-ink-900/90 backdrop-blur border border-slate-200 dark:border-ink-800 shadow-2xl rounded-xl p-2 flex items-center justify-around gap-1 overflow-x-auto transition-all duration-300">
-        {navItems.map((item) => (
+        {currentNavItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -480,6 +617,9 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
       <main className="mx-auto max-w-[1440px] px-6 py-8">
         <Outlet />
       </main>
+
+      {/* Unified Login Modal for Contractor & Admin */}
+      <LoginModal />
 
     </div>
   )

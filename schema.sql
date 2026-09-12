@@ -143,3 +143,33 @@ CREATE TABLE IF NOT EXISTS verification_records (
     status TEXT NOT NULL,
     result_json TEXT NOT NULL
 );
+
+-- CONTRACTORS & SITE GEOFENCING SYSTEM
+CREATE TABLE IF NOT EXISTS contractors (
+    contractor_id TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    contact_person TEXT,
+    email TEXT,
+    phone TEXT,
+    rating NUMERIC DEFAULT 4.5,
+    active_contracts INT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS contractor_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT REFERENCES projects(project_id),
+    contractor_id TEXT REFERENCES contractors(contractor_id),
+    package_name TEXT,
+    assigned_date TEXT,
+    contract_value_cr NUMERIC,
+    UNIQUE(project_id, contractor_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_geofences (
+    project_id TEXT PRIMARY KEY REFERENCES projects(project_id),
+    center_lat NUMERIC NOT NULL,
+    center_lng NUMERIC NOT NULL,
+    radius_km NUMERIC DEFAULT 3.0,
+    boundary_geojson TEXT NOT NULL,
+    created_at TEXT
+);

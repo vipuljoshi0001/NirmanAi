@@ -69,6 +69,71 @@ def _ensure_verification_schema():
         conn.close()
 
 
+def _ensure_contractor_schema():
+    """Ensure contractors, contractor_assignments, and contractor_progress_reports tables exist."""
+    _ensure_verification_schema()
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS contractors ("
+            "  contractor_id TEXT PRIMARY KEY,"
+            "  company_name TEXT NOT NULL,"
+            "  contact_person TEXT,"
+            "  email TEXT,"
+            "  phone TEXT,"
+            "  rating NUMERIC DEFAULT 4.5,"
+            "  active_contracts INT DEFAULT 0"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS contractor_assignments ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  project_id TEXT,"
+            "  contractor_id TEXT,"
+            "  package_name TEXT,"
+            "  assigned_date TEXT,"
+            "  contract_value_cr NUMERIC,"
+            "  UNIQUE(project_id, contractor_id)"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS contractor_progress_reports ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  submission_id TEXT UNIQUE,"
+            "  project_id TEXT NOT NULL,"
+            "  contractor_id TEXT NOT NULL,"
+            "  physical_progress_pct NUMERIC,"
+            "  financial_expenditure_cr NUMERIC,"
+            "  notes TEXT,"
+            "  photo_url TEXT,"
+            "  gps_lat NUMERIC,"
+            "  gps_lng NUMERIC,"
+            "  inside_geofence INT,"
+            "  verification_status TEXT,"
+            "  counts_towards_progress INT,"
+            "  submitted_at TEXT NOT NULL,"
+            "  details_json TEXT"
+            ")"
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM contractors")
+        if cur.fetchone()[0] == 0:
+            for c in mock_data.CONTRACTORS:
+                cur.execute(
+                    "INSERT OR REPLACE INTO contractors (contractor_id, company_name, contact_person, email, phone, rating, active_contracts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (c["contractor_id"], c["company_name"], c["contact_person"], c["email"], c["phone"], c.get("rating", 4.5), c.get("active_contracts", 4))
+                )
+            for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items():
+                cur.execute(
+                    "INSERT OR IGNORE INTO contractor_assignments (project_id, contractor_id, package_name, assigned_date, contract_value_cr) VALUES (?, ?, ?, ?, ?)",
+                    (pid, cid, f"Civil Works Pkg - {pid}", "2024-01-15", 1250.0)
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+
 def _status_from_risk(risk_level: str) -> str:
     """Map a model risk level back to the dashboard status vocabulary."""
     level = str(risk_level or "").strip()
@@ -213,7 +278,9 @@ def format_project_card(row):
         "flags": flags,
         "final_risk_score": final_risk,
         "risk_level": risk_lvl,
+        "contractor": mock_data.get_contractor_for_project(pid),
     }
+
 
 
 class PredictRequest(BaseModel):
@@ -821,6 +888,258 @@ def llm_explain(req: LLMExplainRequest):
         "error": out["error"],
         "source": source,
     }
+
+
+# ---------------------------------------------------------------------------
+# Contractor Portal, Geofence Verification & Unified Auth
+# ---------------------------------------------------------------------------
+class LoginRequest(BaseModel):
+    role: str = "contractor"  # "admin" | "contractor"
+    contractor_id: Optional[str] = "CNT-LT-01"
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest):
+    _ensure_contractor_schema()
+    if req.role == "admin":
+        return {
+            "status": "success",
+            "role": "admin",
+            "user": {
+                "id": "ADM-DG-01",
+                "name": "Director General",
+                "company": "Govt of India (MoSPI Oversight)",
+                "role": "admin",
+                "title": "Director General / Oversight Administrator",
+                "email": "dg.oversight@gov.in",
+                "agency": "National Infrastructure Monitoring Authority"
+            },
+            "token": "admin_session_token_xyz"
+        }
+    else:
+        cid = req.contractor_id or "CNT-LT-01"
+        c = mock_data.get_contractor(cid)
+        if not c:
+            c = mock_data.CONTRACTORS[0]
+        return {
+            "status": "success",
+            "role": "contractor",
+            "user": {
+                "id": c["contractor_id"],
+                "name": c["contact_person"],
+                "company": c["company_name"],
+                "role": "contractor",
+                "email": c["email"],
+                "phone": c["phone"],
+                "rating": c.get("rating", 4.5),
+            },
+            "token": f"contractor_session_{c['contractor_id']}"
+        }
+
+
+@app.get("/api/contractors")
+def list_contractors():
+    _ensure_contractor_schema()
+    return mock_data.CONTRACTORS
+
+
+@app.get("/api/contractors/{contractor_id}/projects")
+def contractor_projects(contractor_id: str):
+    _ensure_contractor_schema()
+    c = mock_data.get_contractor(contractor_id)
+    if not c:
+        raise HTTPException(404, "Contractor not found")
+
+    assigned_pids = [pid for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items() if cid.upper() == contractor_id.upper()]
+    if not assigned_pids:
+        assigned_pids = ["PRJ-0001", "PRJ-0006", "DM-MH-001"]
+
+    res = []
+    for pid in assigned_pids:
+        p_row = q("""
+        SELECT p.project_id, p.sector, p.state, p.sanctioned_cost, p.sanctioned_date, p.original_end_date, p.duration_months,
+               s.physical_progress_pct, s.financial_progress_pct, s.cumulative_expenditure, s.revised_cost,
+               s.cost_overrun_to_date_pct, s.schedule_slip_months, s.revised_end_date,
+               m.cop_prob, m.top_prob, m.model_risk_score, m.rule_risk_score, m.final_risk_score, m.risk_level
+        FROM projects p
+        LEFT JOIN project_snapshots s ON p.project_id = s.project_id AND s.month = 'July'
+        LEFT JOIN model_risk_scores m ON p.project_id = m.project_id AND m.month = 'July'
+        WHERE p.project_id = ?
+        """, params=[pid])
+
+        st = p_row.iloc[0]["state"] if not p_row.empty else "Maharashtra"
+        geofence = mock_data.geofence_for_project(pid, state=st)
+
+        if not p_row.empty:
+            card = format_project_card(p_row.iloc[0].to_dict())
+        else:
+            demo = mock_data.demo_by_id(pid)
+            if demo:
+                card = {
+                    "id": demo["id"],
+                    "project_id": demo["id"],
+                    "name": demo["name"],
+                    "sector": demo["sector"],
+                    "state": demo["state"],
+                    "status": demo["status"],
+                    "physicalProgress": 62.0,
+                    "financialProgress": 58.0,
+                    "expenditure": f"₹ {demo.get('cost_cr', 5000):,} Cr",
+                    "health": 100 - demo.get("risk_score", 40),
+                    "sanctioned_cost": demo.get("cost_cr", 5000),
+                }
+            else:
+                card = {
+                    "id": pid,
+                    "project_id": pid,
+                    "name": f"Civil Package Project ({pid})",
+                    "sector": "Roads & Highways",
+                    "state": "Maharashtra",
+                    "status": "On Track",
+                    "physicalProgress": 55.0,
+                    "financialProgress": 50.0,
+                    "health": 85.0,
+                }
+        card["contractor"] = c
+        card["geofence"] = geofence
+        res.append(card)
+    return res
+
+
+@app.get("/api/projects/{project_id}/geofence")
+def project_geofence(project_id: str):
+    p_row = q("SELECT state FROM projects WHERE project_id = ?", params=[project_id])
+    state = str(p_row.iloc[0]["state"]) if not p_row.empty else "Maharashtra"
+    return mock_data.geofence_for_project(project_id, state=state)
+
+
+@app.post("/api/contractor/submit-progress")
+async def contractor_submit_progress(
+    file: UploadFile = File(...),
+    project_id: str = Form(...),
+    contractor_id: str = Form(...),
+    physical_progress_pct: Optional[float] = Form(None),
+    financial_expenditure_cr: Optional[float] = Form(None),
+    notes: Optional[str] = Form(""),
+    gps_lat: Optional[float] = Form(None),
+    gps_lng: Optional[float] = Form(None),
+    captured_at: Optional[str] = Form(None),
+):
+    _ensure_verification_schema()
+    _ensure_contractor_schema()
+
+    p_row = q("SELECT state FROM projects WHERE project_id = ?", params=[project_id])
+    state = str(p_row.iloc[0]["state"]) if not p_row.empty else "Maharashtra"
+    geofence = mock_data.geofence_for_project(project_id, state=state)
+
+    ext = Path(file.filename or "site.jpg").suffix.lower() or ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+        raise HTTPException(415, "unsupported image type - use JPEG/PNG/WebP")
+
+    sub_id = f"SUB-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')[:17]}"
+    safe_name = f"{sub_id}_{project_id.replace('/', '_')}{ext}"
+    target = UPLOAD_DIR / safe_name
+    with target.open("wb") as fh:
+        shutil.copyfileobj(file.file, fh)
+
+    result = verification.verify_image(
+        target,
+        project_lat=geofence["center_lat"],
+        project_lng=geofence["center_lng"],
+        boundary_polygon=geofence["boundary_lamina"],
+        max_distance_km=geofence.get("radius_km", 3.5),
+        client_lat=gps_lat,
+        client_lng=gps_lng,
+        captured_at=captured_at,
+    )
+
+    is_inside = (result["status"] == "accepted")
+    counts_towards_progress = 1 if is_inside else 0
+
+    updated_progress = None
+    if is_inside and physical_progress_pct is not None:
+        conn = sqlite3.connect(DB)
+        try:
+            conn.execute("""
+            UPDATE project_snapshots
+            SET physical_progress_pct = ?,
+                cumulative_expenditure = COALESCE(?, cumulative_expenditure)
+            WHERE project_id = ? AND month = 'July'
+            """, (physical_progress_pct, financial_expenditure_cr, project_id))
+            conn.commit()
+            updated_progress = physical_progress_pct
+        finally:
+            conn.close()
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("""
+        INSERT INTO contractor_progress_reports
+        (submission_id, project_id, contractor_id, physical_progress_pct, financial_expenditure_cr, notes, photo_url, gps_lat, gps_lng, inside_geofence, verification_status, counts_towards_progress, submitted_at, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            sub_id, project_id, contractor_id,
+            physical_progress_pct, financial_expenditure_cr, notes,
+            f"/uploads/{safe_name}",
+            result.get("gps", {}).get("lat") if result.get("gps") else gps_lat,
+            result.get("gps", {}).get("lng") if result.get("gps") else gps_lng,
+            1 if is_inside else 0,
+            result["status"],
+            counts_towards_progress,
+            result["submitted_at"],
+            json.dumps(result),
+        ))
+        conn.execute("""
+        INSERT INTO verification_records
+        (file_name, upload_path, project_id, submitted_at, status, result_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            file.filename or safe_name, safe_name, project_id,
+            result["submitted_at"], result["status"], json.dumps(result),
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+    dist_val = result.get("distance_km")
+    dist_str = f"{dist_val:.2f} km" if dist_val is not None else "on-site"
+    msg = (
+        f"Verified inside construction area ({dist_str} to site center). Progress successfully credited to project!"
+        if is_inside
+        else f"GEOFENCE VIOLATION: Photo coordinates fall outside the designated construction area lamina. This report does NOT count!"
+    )
+
+    return {
+        "submission_id": sub_id,
+        "project_id": project_id,
+        "contractor_id": contractor_id,
+        "status": result["status"],
+        "counts": bool(counts_towards_progress),
+        "inside_geofence": is_inside,
+        "message": msg,
+        "verification": result,
+        "photo_url": f"/uploads/{safe_name}",
+        "physical_progress_pct": updated_progress if updated_progress is not None else physical_progress_pct,
+        "geofence": geofence,
+    }
+
+
+@app.get("/api/contractor/{contractor_id}/submissions")
+def contractor_submissions(contractor_id: str, limit: int = 50):
+    _ensure_contractor_schema()
+    conn = sqlite3.connect(DB)
+    try:
+        df = pd.read_sql("""
+        SELECT * FROM contractor_progress_reports
+        WHERE contractor_id = ?
+        ORDER BY id DESC LIMIT ?
+        """, conn, params=[contractor_id, limit])
+        return df.to_dict("records")
+    finally:
+        conn.close()
+
 
 
 # ---------------------------------------------------------------------------
