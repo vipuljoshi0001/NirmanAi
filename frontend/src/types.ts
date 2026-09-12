@@ -40,6 +40,11 @@ export interface Project {
   flags: { label: string; tone: 'positive' | 'negative' | 'neutral' }[]
   final_risk_score?: number
   risk_level?: string
+  sanctioned_cost?: number
+  cost_cr?: number
+  contractor?: Contractor
+  contractor_id?: string
+  contractor_name?: string
 }
 
 /** A project as returned by the backend's geospatial feed (`/api/projects?map=true`). */

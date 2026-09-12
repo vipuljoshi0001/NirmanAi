@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, NavLink } from 'react-router-dom'
 import {
   Search,
   LayoutGrid,
@@ -12,6 +12,7 @@ import {
 import ProjectCard from '../components/ProjectCard'
 import type { Project, Sector } from '../types'
 import { getProjects, registerNewProject } from '../services/api'
+import { useAuth } from '../context/AuthContext'
 
 const sectors: (Sector | 'All Sectors')[] = [
   'All Sectors',
@@ -47,6 +48,7 @@ export default function Projects() {
       setQuery(q)
     }
   }, [searchParams])
+  const { role } = useAuth()
   const [loading, setLoading] = useState(true)
   const [showAddProject, setShowAddProject] = useState(false)
   const [isPredicting, setIsPredicting] = useState(false)
@@ -240,13 +242,15 @@ export default function Projects() {
           )}
         </div>
 
-        <button
-          onClick={() => setShowAddProject(true)}
-          className="flex items-center gap-2 rounded-lg bg-brand-orange hover:bg-brand-orangeDark px-4 py-2.5 text-sm font-semibold text-white transition-colors"
-        >
-          <Plus size={15} />
-          Register Project & Run ML
-        </button>
+        {role === 'admin' && (
+          <NavLink
+            to="/admin"
+            className="flex items-center gap-2 rounded-lg bg-brand-orange hover:bg-brand-orangeDark px-4 py-2.5 text-sm font-semibold text-white transition-colors cursor-pointer"
+          >
+            <Plus size={15} />
+            Add Project & Geofencing
+          </NavLink>
+        )}
       </div>
 
       <div className="flex items-center justify-between">

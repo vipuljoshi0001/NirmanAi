@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,7 +71,7 @@ def _ensure_verification_schema():
 
 
 def _ensure_contractor_schema():
-    """Ensure contractors, contractor_assignments, and contractor_progress_reports tables exist."""
+    """Ensure contractors, contractor_assignments, contractor_progress_reports, and project_geofences tables exist."""
     _ensure_verification_schema()
     conn = sqlite3.connect(DB)
     try:
@@ -112,9 +113,26 @@ def _ensure_contractor_schema():
             "  verification_status TEXT,"
             "  counts_towards_progress INT,"
             "  submitted_at TEXT NOT NULL,"
-            "  details_json TEXT"
+            "  details_json TEXT,"
+            "  ai_intelligence_json TEXT"
             ")"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS project_geofences ("
+            "  project_id TEXT PRIMARY KEY,"
+            "  center_lat NUMERIC NOT NULL,"
+            "  center_lng NUMERIC NOT NULL,"
+            "  radius_km NUMERIC DEFAULT 3.0,"
+            "  boundary_geojson TEXT NOT NULL,"
+            "  created_at TEXT"
+            ")"
+        )
+        # Migrate existing contractor_progress_reports if column missing
+        try:
+            conn.execute("ALTER TABLE contractor_progress_reports ADD COLUMN ai_intelligence_json TEXT")
+        except Exception:
+            pass
+
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM contractors")
         if cur.fetchone()[0] == 0:
@@ -313,6 +331,10 @@ class RegisterProjectRequest(BaseModel):
     cumulative_expenditure: Optional[float] = None
     sanctioned_date: Optional[str] = "2024-01-01"
     original_end_date: Optional[str] = "2027-01-01"
+    center_lat: Optional[float] = None
+    center_lng: Optional[float] = None
+    radius_km: Optional[float] = 3.5
+    contractor_id: Optional[str] = "CNT-LT-01"
 
 
 @app.get("/", include_in_schema=False)
@@ -548,8 +570,52 @@ def register_project(req: RegisterProjectRequest):
         (new_id, f"{new_id}_July", pred_res["cop_prob"], pred_res["top_prob"], pred_res["model_risk_score"], pred_res["rule_risk_score"], pred_res["final_risk_score"], pred_res["risk_level"])
     )
 
+    # Persist initial project_features
+    elapsed = float(req.months_elapsed or 12.0)
+    dur = float(req.duration_months or 36.0)
+    exp_phys = float(np.clip(100 * elapsed / max(1, dur), 0, 100))
+    fin_phys_gap = round(req.financial_progress_pct - req.physical_progress_pct, 3)
+    phys_sched_gap = round(req.physical_progress_pct - exp_phys, 3)
+    exp_rate = round(cum_exp / max(1, revised_cost) * 100, 3)
+
+    c.execute(
+        "INSERT OR REPLACE INTO project_features "
+        "(project_id, sector, state, month, snapshot_id, physical_progress_pct, financial_progress_pct, "
+        "cost_overrun_to_date_pct, schedule_slip_months, financial_physical_gap, expected_physical_pct, "
+        "physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline) "
+        "VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_id, req.sector, req.state, f"{new_id}_July",
+         req.physical_progress_pct, req.financial_progress_pct, req.cost_overrun_to_date_pct, req.schedule_slip_months,
+         fin_phys_gap, exp_phys, phys_sched_gap, exp_rate,
+         pred_res.get("sector_risk_baseline", 8.0), pred_res.get("state_risk_baseline", 5.0))
+    )
+
+    # Persist designated geofence lamina if coordinates supplied
+    if req.center_lat is not None and req.center_lng is not None:
+        poly = verification.generate_lamina_polygon(req.center_lat, req.center_lng, radius_km=req.radius_km or 3.5, vertices=6)
+        bg = {
+            "type": "Polygon",
+            "coordinates": [[[pt[1], pt[0]] for pt in poly] + [[poly[0][1], poly[0][0]]]]
+        }
+        c.execute(
+            "INSERT OR REPLACE INTO project_geofences (project_id, center_lat, center_lng, radius_km, boundary_geojson, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_id, req.center_lat, req.center_lng, req.radius_km or 3.5, json.dumps(bg), datetime.now(timezone.utc).isoformat())
+        )
+
+    # Assign contractor to project
+    cid = req.contractor_id or "CNT-LT-01"
+    c.execute(
+        "INSERT OR REPLACE INTO contractor_assignments (project_id, contractor_id, package_name, assigned_date, contract_value_cr) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (new_id, cid, f"Civil Works Package -- {new_id}", datetime.now(timezone.utc).strftime("%Y-%m-%d"), req.sanctioned_cost)
+    )
+    mock_data.EXPLICIT_ASSIGNMENTS[new_id] = cid
+
     conn.commit()
     conn.close()
+
+    engine.reload_data()
 
     row = {
         "project_id": new_id,
@@ -576,6 +642,8 @@ def register_project(req: RegisterProjectRequest):
     if req.ministry:
         card["ministry"] = req.ministry
     card["prediction"] = pred_res
+    card["contractor"] = mock_data.get_contractor(cid)
+    card["geofence"] = mock_data.geofence_for_project(new_id, state=req.state)
     return card
 
 
@@ -895,7 +963,7 @@ def llm_explain(req: LLMExplainRequest):
 # ---------------------------------------------------------------------------
 class LoginRequest(BaseModel):
     role: str = "contractor"  # "admin" | "contractor"
-    contractor_id: Optional[str] = "CNT-LT-01"
+    contractor_id: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
 
@@ -904,6 +972,14 @@ class LoginRequest(BaseModel):
 def auth_login(req: LoginRequest):
     _ensure_contractor_schema()
     if req.role == "admin":
+        admin_id = (req.username or req.contractor_id or "").strip()
+        pwd = (req.password or "").strip()
+
+        if not admin_id or admin_id.lower() not in {"admin", "adm-dg-01", "director", "dg"}:
+            raise HTTPException(401, "Invalid admin ID. Authorized ID is 'admin' or 'ADM-DG-01'")
+        if pwd != "admin123":
+            raise HTTPException(401, "Invalid admin password. Default demo password is 'admin123'")
+
         return {
             "status": "success",
             "role": "admin",
@@ -919,10 +995,19 @@ def auth_login(req: LoginRequest):
             "token": "admin_session_token_xyz"
         }
     else:
-        cid = req.contractor_id or "CNT-LT-01"
+        cid = (req.contractor_id or req.username or "").strip().upper()
+        pwd = (req.password or "").strip()
+
+        if not cid:
+            raise HTTPException(400, "Contractor ID is required")
+
         c = mock_data.get_contractor(cid)
         if not c:
-            c = mock_data.CONTRACTORS[0]
+            raise HTTPException(404, f"Contractor ID '{cid}' not found in registry")
+
+        if pwd != "contractor123":
+            raise HTTPException(401, "Invalid contractor password. Default demo password is 'contractor123'")
+
         return {
             "status": "success",
             "role": "contractor",
@@ -952,7 +1037,17 @@ def contractor_projects(contractor_id: str):
     if not c:
         raise HTTPException(404, "Contractor not found")
 
-    assigned_pids = [pid for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items() if cid.upper() == contractor_id.upper()]
+    conn = sqlite3.connect(DB)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT project_id FROM contractor_assignments WHERE UPPER(contractor_id) = ?", (contractor_id.upper(),))
+        rows = cur.fetchall()
+        assigned_pids = [r[0] for r in rows if r[0]]
+    finally:
+        conn.close()
+
+    if not assigned_pids:
+        assigned_pids = [pid for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items() if cid.upper() == contractor_id.upper()]
     if not assigned_pids:
         assigned_pids = ["PRJ-0001", "PRJ-0006", "DM-MH-001"]
 
@@ -1015,6 +1110,155 @@ def project_geofence(project_id: str):
     return mock_data.geofence_for_project(project_id, state=state)
 
 
+def recompute_project_intelligence(
+    project_id: str,
+    physical_progress_pct: float,
+    financial_expenditure_cr: Optional[float] = None,
+    notes: str = ""
+) -> dict:
+    """Derive updated features, ML model probabilities, composite health,
+
+    and update project_snapshots, model_risk_scores, and project_features in SQLite DB.
+    """
+    conn = sqlite3.connect(DB)
+    try:
+        p_row = pd.read_sql("SELECT * FROM projects WHERE project_id = ?", conn, params=[project_id])
+        if p_row.empty:
+            demo = mock_data.demo_by_id(project_id)
+            if demo:
+                sector = demo.get("sector", "Roads & Highways")
+                state = demo.get("state", "Maharashtra")
+                sanctioned_cost = float(demo.get("cost_cr", 5000.0))
+            else:
+                sector = "Roads & Highways"
+                state = "Maharashtra"
+                sanctioned_cost = 2500.0
+            conn.execute(
+                "INSERT OR REPLACE INTO projects (project_id, sector, state, sanctioned_cost, sanctioned_date, original_end_date, duration_months) "
+                "VALUES (?, ?, ?, ?, '2024-01-01', '2027-01-01', 36)",
+                (project_id, sector, state, sanctioned_cost)
+            )
+            p_row = pd.read_sql("SELECT * FROM projects WHERE project_id = ?", conn, params=[project_id])
+
+        p_info = p_row.iloc[0].to_dict()
+        sector = p_info["sector"]
+        state = p_info["state"]
+        sanctioned_cost = float(p_info.get("sanctioned_cost") or 1000.0)
+        duration_months = float(p_info.get("duration_months") or 36.0)
+
+        s_row = pd.read_sql("SELECT * FROM project_snapshots WHERE project_id = ? AND month = 'July'", conn, params=[project_id])
+        if not s_row.empty:
+            s_info = s_row.iloc[0].to_dict()
+            prev_phys = float(s_info.get("physical_progress_pct") or 0.0)
+            cum_exp = float(s_info.get("cumulative_expenditure") or 0.0)
+            rev_cost = float(s_info.get("revised_cost") or sanctioned_cost)
+            overrun = float(s_info.get("cost_overrun_to_date_pct") or 0.0)
+            slip = float(s_info.get("schedule_slip_months") or 0.0)
+        else:
+            prev_phys = 30.0
+            cum_exp = round(sanctioned_cost * (physical_progress_pct / 100.0), 2)
+            rev_cost = sanctioned_cost
+            overrun = 0.0
+            slip = 0.0
+
+        if financial_expenditure_cr is not None:
+            cum_exp = float(financial_expenditure_cr)
+
+        fin_pct = round((cum_exp / max(1.0, sanctioned_cost)) * 100.0, 2)
+        elapsed = 18.0
+
+        conn.execute("DELETE FROM project_snapshots WHERE project_id = ? AND month = 'July'", (project_id,))
+        conn.execute("""
+            INSERT INTO project_snapshots
+            (project_id, month, snapshot_date, physical_progress_pct, financial_progress_pct, cumulative_expenditure, revised_cost, cost_overrun_to_date_pct, revised_end_date, schedule_slip_months)
+            VALUES (?, 'July', '2026-07-31', ?, ?, ?, ?, ?, '2028-12-31', ?)
+        """, (project_id, physical_progress_pct, fin_pct, cum_exp, rev_cost, overrun, slip))
+
+        engine = scoring.get_engine()
+        pred_data = {
+            "project_id": project_id,
+            "sector": sector,
+            "state": state,
+            "sanctioned_cost": sanctioned_cost,
+            "revised_cost": rev_cost,
+            "duration_months": duration_months,
+            "months_elapsed": elapsed,
+            "physical_progress_pct": physical_progress_pct,
+            "financial_progress_pct": fin_pct,
+            "cost_overrun_to_date_pct": overrun,
+            "schedule_slip_months": slip,
+            "cumulative_expenditure": cum_exp,
+        }
+        pred_res = engine.predict_custom(pred_data)
+
+        conn.execute("DELETE FROM model_risk_scores WHERE project_id = ? AND month = 'July'", (project_id,))
+        conn.execute("""
+            INSERT INTO model_risk_scores
+            (project_id, snapshot_id, month, cop_prob, top_prob, model_risk_score, rule_risk_score, final_risk_score, risk_level)
+            VALUES (?, ?, 'July', ?, ?, ?, ?, ?, ?)
+        """, (
+            project_id,
+            f"{project_id}_July",
+            pred_res["cop_prob"],
+            pred_res["top_prob"],
+            pred_res["model_risk_score"],
+            pred_res["rule_risk_score"],
+            pred_res["final_risk_score"],
+            pred_res["risk_level"]
+        ))
+
+        exp_phys = float(np.clip(100 * elapsed / max(1, duration_months), 0, 100))
+        fin_phys_gap = round(fin_pct - physical_progress_pct, 3)
+        phys_sched_gap = round(physical_progress_pct - exp_phys, 3)
+        exp_rate = round(cum_exp / max(1, rev_cost) * 100, 3)
+
+        conn.execute("DELETE FROM project_features WHERE project_id = ? AND month = 'July'", (project_id,))
+        conn.execute("""
+            INSERT INTO project_features
+            (project_id, sector, state, month, snapshot_id, physical_progress_pct, financial_progress_pct,
+             cost_overrun_to_date_pct, schedule_slip_months, financial_physical_gap, expected_physical_pct,
+             physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline)
+            VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            project_id, sector, state, f"{project_id}_July",
+            physical_progress_pct, fin_pct, overrun, slip,
+            fin_phys_gap, exp_phys, phys_sched_gap, exp_rate,
+            pred_res.get("sector_risk_baseline", 8.0), pred_res.get("state_risk_baseline", 5.0)
+        ))
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    engine.reload_data()
+
+    ai_narrative = (
+        f"On-site telemetry verified within designated construction lamina. "
+        f"Physical execution progress updated to {physical_progress_pct:.1f}%. "
+        f"AI ML model recomputed cost overrun risk to {round(pred_res['cop_prob']*100, 1)}% "
+        f"and time delay risk to {round(pred_res['top_prob']*100, 1)}%. "
+        f"Composite project health index: {pred_res['health']}/100 ({pred_res['risk_level']} risk tier)."
+    )
+
+    return {
+        "project_id": project_id,
+        "previous_physical_progress": prev_phys,
+        "updated_physical_progress": physical_progress_pct,
+        "financial_progress_pct": fin_pct,
+        "cop_prob": round(pred_res["cop_prob"] * 100, 1),
+        "top_prob": round(pred_res["top_prob"] * 100, 1),
+        "model_risk_score": pred_res["model_risk_score"],
+        "rule_risk_score": pred_res["rule_risk_score"],
+        "final_risk_score": pred_res["final_risk_score"],
+        "risk_level": pred_res["risk_level"],
+        "health": pred_res["health"],
+        "shap_drivers": pred_res.get("shap_drivers", [])[:3],
+        "warnings": pred_res.get("warnings", []),
+        "narrative": ai_narrative,
+        "derived_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.post("/api/contractor/submit-progress")
 async def contractor_submit_progress(
     file: UploadFile = File(...),
@@ -1058,27 +1302,23 @@ async def contractor_submit_progress(
     is_inside = (result["status"] == "accepted")
     counts_towards_progress = 1 if is_inside else 0
 
+    ai_intelligence = None
     updated_progress = None
     if is_inside and physical_progress_pct is not None:
-        conn = sqlite3.connect(DB)
-        try:
-            conn.execute("""
-            UPDATE project_snapshots
-            SET physical_progress_pct = ?,
-                cumulative_expenditure = COALESCE(?, cumulative_expenditure)
-            WHERE project_id = ? AND month = 'July'
-            """, (physical_progress_pct, financial_expenditure_cr, project_id))
-            conn.commit()
-            updated_progress = physical_progress_pct
-        finally:
-            conn.close()
+        ai_intelligence = recompute_project_intelligence(
+            project_id=project_id,
+            physical_progress_pct=physical_progress_pct,
+            financial_expenditure_cr=financial_expenditure_cr,
+            notes=notes or "",
+        )
+        updated_progress = physical_progress_pct
 
     conn = sqlite3.connect(DB)
     try:
         conn.execute("""
         INSERT INTO contractor_progress_reports
-        (submission_id, project_id, contractor_id, physical_progress_pct, financial_expenditure_cr, notes, photo_url, gps_lat, gps_lng, inside_geofence, verification_status, counts_towards_progress, submitted_at, details_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (submission_id, project_id, contractor_id, physical_progress_pct, financial_expenditure_cr, notes, photo_url, gps_lat, gps_lng, inside_geofence, verification_status, counts_towards_progress, submitted_at, details_json, ai_intelligence_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sub_id, project_id, contractor_id,
             physical_progress_pct, financial_expenditure_cr, notes,
@@ -1090,6 +1330,7 @@ async def contractor_submit_progress(
             counts_towards_progress,
             result["submitted_at"],
             json.dumps(result),
+            json.dumps(ai_intelligence) if ai_intelligence else None,
         ))
         conn.execute("""
         INSERT INTO verification_records
@@ -1123,6 +1364,7 @@ async def contractor_submit_progress(
         "photo_url": f"/uploads/{safe_name}",
         "physical_progress_pct": updated_progress if updated_progress is not None else physical_progress_pct,
         "geofence": geofence,
+        "ai_intelligence": ai_intelligence,
     }
 
 
@@ -1131,14 +1373,220 @@ def contractor_submissions(contractor_id: str, limit: int = 50):
     _ensure_contractor_schema()
     conn = sqlite3.connect(DB)
     try:
-        df = pd.read_sql("""
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
         SELECT * FROM contractor_progress_reports
-        WHERE contractor_id = ?
+        WHERE UPPER(contractor_id) = ?
         ORDER BY id DESC LIMIT ?
-        """, conn, params=[contractor_id, limit])
-        return df.to_dict("records")
+        """, (contractor_id.upper(), limit))
+        return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Administrative Management Endpoints (State Assignments, Geofencing & Audits)
+# ---------------------------------------------------------------------------
+class AssignContractorRequest(BaseModel):
+    project_id: str
+    contractor_id: str
+    package_name: Optional[str] = None
+    contract_value_cr: Optional[float] = None
+
+
+@app.post("/api/admin/assign-contractor")
+def admin_assign_contractor(req: AssignContractorRequest):
+    _ensure_contractor_schema()
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("""
+        INSERT OR REPLACE INTO contractor_assignments
+        (project_id, contractor_id, package_name, assigned_date, contract_value_cr)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            req.project_id,
+            req.contractor_id,
+            req.package_name or f"Package Contract -- {req.project_id}",
+            datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            req.contract_value_cr or 1200.0,
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+    mock_data.EXPLICIT_ASSIGNMENTS[req.project_id] = req.contractor_id
+    c = mock_data.get_contractor(req.contractor_id)
+    return {
+        "status": "success",
+        "project_id": req.project_id,
+        "contractor": c,
+        "message": f"Assigned project {req.project_id} to {c['company_name'] if c else req.contractor_id}"
+    }
+
+
+class AdminGeofenceRequest(BaseModel):
+    project_id: str
+    center_lat: float
+    center_lng: float
+    radius_km: float = 3.5
+
+
+@app.post("/api/admin/geofence")
+def admin_set_geofence(req: AdminGeofenceRequest):
+    _ensure_contractor_schema()
+    poly = verification.generate_lamina_polygon(req.center_lat, req.center_lng, radius_km=req.radius_km, vertices=6)
+    bg = {
+        "type": "Polygon",
+        "coordinates": [[[pt[1], pt[0]] for pt in poly] + [[poly[0][1], poly[0][0]]]]
+    }
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("""
+        INSERT OR REPLACE INTO project_geofences
+        (project_id, center_lat, center_lng, radius_km, boundary_geojson, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            req.project_id,
+            req.center_lat,
+            req.center_lng,
+            req.radius_km,
+            json.dumps(bg),
+            datetime.now(timezone.utc).isoformat()
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "status": "success",
+        "project_id": req.project_id,
+        "center_lat": req.center_lat,
+        "center_lng": req.center_lng,
+        "radius_km": req.radius_km,
+        "boundary_lamina": poly,
+        "boundary_geojson": bg,
+    }
+
+
+@app.get("/api/admin/audits")
+def admin_audits(limit: int = 100):
+    _ensure_contractor_schema()
+    conn = sqlite3.connect(DB)
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT r.*, c.company_name, c.contact_person
+        FROM contractor_progress_reports r
+        LEFT JOIN contractors c ON r.contractor_id = c.contractor_id
+        ORDER BY r.id DESC LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+@app.get("/api/notifications")
+def get_notifications(role: str = "guest", contractor_id: Optional[str] = None):
+    """Role-segregated notification feed:
+
+    - guest: empty list (no notifications)
+    - contractor: reports submitted by contractor (approved vs geofence breaches)
+    - admin: all uploaded reports across India and geofence alerts
+    """
+    _ensure_contractor_schema()
+    if role == "guest" or role not in {"admin", "contractor"}:
+        return {"notifications": [], "unread_count": 0}
+
+    conn = sqlite3.connect(DB)
+    try:
+        cur = conn.cursor()
+        c_names = {c["contractor_id"]: c["company_name"] for c in mock_data.CONTRACTORS}
+
+        if role == "contractor":
+            cid = (contractor_id or "CNT-LT-01").strip().upper()
+            cur.execute("""
+                SELECT submission_id, project_id, contractor_id, physical_progress_pct,
+                       inside_geofence, verification_status, submitted_at, notes, details_json, ai_intelligence_json
+                FROM contractor_progress_reports
+                WHERE UPPER(contractor_id) = ?
+                ORDER BY id DESC LIMIT 30
+            """, (cid,))
+            rows = cur.fetchall()
+            notifs = []
+            for r in rows:
+                sub_id, pid, cid_val, phys, inside, v_stat, sub_at, notes_val, det_json, intel_json = r
+                if inside == 1:
+                    notifs.append({
+                        "id": f"notif-{sub_id}",
+                        "submission_id": sub_id,
+                        "project_id": pid,
+                        "title": f"Report Approved: {pid}",
+                        "message": f"On-site photo verified within designated construction lamina. Progress updated to {phys}%. AI intelligence updated.",
+                        "status": "approved",
+                        "tone": "green",
+                        "time": sub_at,
+                        "progress": phys,
+                    })
+                else:
+                    notifs.append({
+                        "id": f"notif-{sub_id}",
+                        "submission_id": sub_id,
+                        "project_id": pid,
+                        "title": f"Report NOT Approved: {pid}",
+                        "message": f"GEOFENCE BREACH: Submission captured outside designated construction lamina. Progress does NOT count towards project metrics.",
+                        "status": "not_approved",
+                        "tone": "red",
+                        "time": sub_at,
+                        "progress": phys,
+                    })
+            return {"notifications": notifs, "unread_count": len(notifs)}
+
+        elif role == "admin":
+            cur.execute("""
+                SELECT submission_id, project_id, contractor_id, physical_progress_pct,
+                       inside_geofence, verification_status, submitted_at, notes, details_json, ai_intelligence_json
+                FROM contractor_progress_reports
+                ORDER BY id DESC LIMIT 40
+            """)
+            rows = cur.fetchall()
+            notifs = []
+            for r in rows:
+                sub_id, pid, cid_val, phys, inside, v_stat, sub_at, notes_val, det_json, intel_json = r
+                c_name = c_names.get(cid_val, cid_val)
+                if inside == 1:
+                    notifs.append({
+                        "id": f"notif-adm-{sub_id}",
+                        "submission_id": sub_id,
+                        "project_id": pid,
+                        "contractor_id": cid_val,
+                        "contractor_name": c_name,
+                        "title": f"Verified Submission: {pid}",
+                        "message": f"{c_name} submitted on-site evidence for {pid}. Verified within construction lamina (Progress: {phys}%). ML intelligence updated.",
+                        "status": "approved",
+                        "tone": "green",
+                        "time": sub_at,
+                        "progress": phys,
+                    })
+                else:
+                    notifs.append({
+                        "id": f"notif-adm-{sub_id}",
+                        "submission_id": sub_id,
+                        "project_id": pid,
+                        "contractor_id": cid_val,
+                        "contractor_name": c_name,
+                        "title": f"GEOFENCE ALERT: {pid}",
+                        "message": f"Contractor {c_name} submitted photo outside designated geofence lamina for {pid}. Automatically rejected.",
+                        "status": "not_approved",
+                        "tone": "red",
+                        "time": sub_at,
+                        "progress": phys,
+                    })
+            return {"notifications": notifs, "unread_count": len(notifs)}
+    finally:
+        conn.close()
+
 
 
 

@@ -638,31 +638,109 @@ export default function ContractorPanel() {
               {/* Submission Result Notification Banner */}
               {submitResult && (
                 <div
-                  className={`p-4 rounded-2xl border text-xs animate-in zoom-in-95 duration-200 ${
+                  className={`p-5 rounded-2xl border text-xs animate-in zoom-in-95 duration-200 space-y-3 ${
                     submitResult.counts
-                      ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-400 text-emerald-900 dark:text-emerald-200'
-                      : 'bg-rose-100 dark:bg-rose-950/60 border-rose-400 text-rose-900 dark:text-rose-200'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-400 text-emerald-900 dark:text-emerald-200'
+                      : 'bg-rose-50 dark:bg-rose-950/50 border-rose-400 text-rose-900 dark:text-rose-200'
                   }`}
                 >
-                  <div className="flex items-center gap-2 font-bold text-sm">
-                    {submitResult.counts ? (
-                      <>
-                        <CheckCircle2 className="text-emerald-600" size={20} />
-                        Report Verified & Successfully Counted!
-                      </>
-                    ) : (
-                      <>
-                        <AlertTriangle className="text-rose-600" size={20} />
-                        Report Rejected: Geofence Enforcement Triggered
-                      </>
-                    )}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-bold text-sm">
+                      {submitResult.counts ? (
+                        <>
+                          <CheckCircle2 className="text-emerald-600 dark:text-emerald-400" size={20} />
+                          <span>Report Verified & Counted On-Site</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="text-rose-600 dark:text-rose-400" size={20} />
+                          <span>Report Rejected: Geofence Enforcement Triggered</span>
+                        </>
+                      )}
+                    </div>
+                    <span className="font-mono text-[11px] px-2.5 py-0.5 rounded-full bg-white/80 dark:bg-black/40 border border-current/20">
+                      ID: #{submitResult.submission_id}
+                    </span>
                   </div>
-                  <p className="mt-1.5 leading-relaxed">{submitResult.message}</p>
-                  <div className="mt-2 pt-2 border-t border-current/20 flex flex-wrap items-center gap-4 text-[11px]">
-                    <span>Submission ID: <strong className="font-mono">{submitResult.submission_id}</strong></span>
+
+                  <p className="leading-relaxed text-xs">{submitResult.message}</p>
+
+                  <div className="pt-2 border-t border-current/15 flex flex-wrap items-center gap-4 text-[11px]">
                     <span>Status: <strong className="uppercase">{submitResult.status}</strong></span>
                     <span>Official Metrics Updated: <strong>{submitResult.counts ? 'YES (Updated to ' + submitResult.physical_progress_pct + '%)' : 'NO (Discarded)'}</strong></span>
                   </div>
+
+                  {/* Derived AI Intelligence Sub-Card */}
+                  {submitResult.ai_intelligence && (
+                    <div className="mt-3 p-4 rounded-xl bg-white dark:bg-ink-900/90 border border-emerald-200 dark:border-emerald-800/60 shadow-sm text-slate-800 dark:text-slate-100 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Sparkles size={16} className="text-amber-500 animate-pulse" />
+                          <span className="font-bold text-xs uppercase tracking-wider text-slate-900 dark:text-white">
+                            AI Model Intelligence Derivation
+                          </span>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          submitResult.ai_intelligence.risk_level === 'HIGH'
+                            ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300 border border-rose-500/30'
+                            : submitResult.ai_intelligence.risk_level === 'MEDIUM'
+                            ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30'
+                            : 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30'
+                        }`}>
+                          {submitResult.ai_intelligence.risk_level} RISK TIER
+                        </span>
+                      </div>
+
+                      {/* Health & Metrics Bar */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-ink-800 border border-slate-200 dark:border-ink-700">
+                          <p className="text-[10px] text-slate-400 font-semibold uppercase">Physical Progress</p>
+                          <p className="text-base font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                            {submitResult.ai_intelligence.updated_physical_progress}%
+                          </p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-ink-800 border border-slate-200 dark:border-ink-700">
+                          <p className="text-[10px] text-slate-400 font-semibold uppercase">Composite Health</p>
+                          <p className="text-base font-bold text-cyan-600 dark:text-cyan-400 mt-0.5">
+                            {submitResult.ai_intelligence.health} / 100
+                          </p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-ink-800 border border-slate-200 dark:border-ink-700">
+                          <p className="text-[10px] text-slate-400 font-semibold uppercase">Cost Overrun Prob</p>
+                          <p className="text-base font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                            {submitResult.ai_intelligence.cop_prob}%
+                          </p>
+                        </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-ink-800 border border-slate-200 dark:border-ink-700">
+                          <p className="text-[10px] text-slate-400 font-semibold uppercase">Schedule Delay Prob</p>
+                          <p className="text-base font-bold text-indigo-600 dark:text-indigo-400 mt-0.5">
+                            {submitResult.ai_intelligence.top_prob}%
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* AI Brief */}
+                      {submitResult.ai_intelligence.narrative && (
+                        <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-ink-800/60 p-2.5 rounded-lg border border-slate-200/60 dark:border-ink-700/60">
+                          {submitResult.ai_intelligence.narrative}
+                        </p>
+                      )}
+
+                      {/* SHAP Risk Drivers */}
+                      {submitResult.ai_intelligence.shap_drivers && submitResult.ai_intelligence.shap_drivers.length > 0 && (
+                        <div className="space-y-1.5 pt-1">
+                          <p className="text-[10px] uppercase font-bold text-slate-400">Key AI Risk Drivers</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {submitResult.ai_intelligence.shap_drivers.slice(0, 3).map((driver: any, idx: number) => (
+                              <span key={idx} className="px-2 py-0.5 rounded-md text-[10px] bg-slate-100 dark:bg-ink-800 border border-slate-200 dark:border-ink-700 text-slate-700 dark:text-slate-300">
+                                {driver.feature || driver.driver}: <strong>{driver.impact || driver.weight || driver.value}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

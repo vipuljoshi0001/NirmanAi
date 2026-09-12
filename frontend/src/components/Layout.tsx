@@ -18,6 +18,7 @@ import {
   HardHat,
   ShieldCheck,
   User,
+  Building2,
 } from 'lucide-react'
 import NotificationCenter from './NotificationCenter'
 import { LoginModal } from './LoginModal'
@@ -72,8 +73,22 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const currentNavItems = useMemo(() => {
+    if (role === 'admin') {
+      return [
+        { to: '/admin', label: 'Admin Workspace' },
+        { to: '/projects', label: 'Projects' },
+        { to: '/map', label: 'Project Map' },
+        { to: '/intelligence', label: 'Intelligence' },
+        { to: '/state-analysis', label: 'State Analysis' },
+        { to: '/reports', label: 'Reports' },
+      ]
+    }
     if (role === 'contractor') {
-      return [...navItems, { to: '/contractor', label: 'Contractor Panel' }]
+      return [
+        { to: '/projects', label: 'Projects' },
+        { to: '/map', label: 'Projects Map' },
+        { to: '/contractor', label: 'Submitted Reports' },
+      ]
     }
     return navItems
   }, [role])
@@ -174,7 +189,10 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
           
           <div className="flex items-center gap-3 md:gap-6 min-w-0">
             {/* Logo Wrapper Container */}
-            <a href="/" className="flex flex-col items-center justify-center select-none group min-w-[100px] sm:min-w-[150px] lg:min-w-[200px]">
+            <NavLink 
+              to={role === 'admin' ? '/admin' : role === 'contractor' ? '/contractor' : '/'} 
+              className="flex flex-col items-center justify-center select-none group min-w-[100px] sm:min-w-[150px] lg:min-w-[200px]"
+            >
               <img 
                 src={paimanaLogo} 
                 alt="Paimana Logo" 
@@ -183,7 +201,7 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
               <span className="block text-[6px] sm:text-[8px] font-bold tracking-[0.12em] sm:tracking-[0.18em] text-slate-400 dark:text-slate-500 mt-1 leading-none text-center">
                 NATIONAL MONITORING DASHBOARD
               </span>
-            </a>
+            </NavLink>
             
             {/* Desktop Navigation Menu (hidden on mobile devices) */}
             <nav className="hidden md:flex items-center gap-4 lg:gap-6 overflow-x-auto whitespace-nowrap">
@@ -191,7 +209,7 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  end={item.to === '/'}
+                  end={item.to === '/' || item.to === '/admin' || item.to === '/contractor'}
                   className={({ isActive }) =>
                     `text-sm font-semibold transition-all px-2.5 py-1.5 rounded-full ${
                       isActive 
@@ -228,18 +246,20 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
               {darkMode ? <Sun size={16} className="text-amber-400" /> : <Moon size={16} />}
             </button>
 
-            {/* Notification Center */}
-            <div className="relative">
-              <button
-                onClick={() => setNotifOpen((v) => !v)}
-                className="relative text-slate-500 dark:text-slate-400 p-2 rounded-full bg-white/60 dark:bg-ink-800/60 border border-slate-200/60 dark:border-ink-700/60 shadow-sm hover:bg-slate-100 dark:hover:bg-ink-700 transition-all cursor-pointer"
-                aria-label="Notifications"
-              >
-                <Bell size={16} />
-                <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-brand-orange" />
-              </button>
-              {notifOpen && <NotificationCenter onClose={() => setNotifOpen(false)} />}
-            </div>
+            {/* Notification Center - Hidden for public guests */}
+            {role !== 'guest' && (
+              <div className="relative">
+                <button
+                  onClick={() => setNotifOpen((v) => !v)}
+                  className="relative text-slate-500 dark:text-slate-400 p-2 rounded-full bg-white/60 dark:bg-ink-800/60 border border-slate-200/60 dark:border-ink-700/60 shadow-sm hover:bg-slate-100 dark:hover:bg-ink-700 transition-all cursor-pointer"
+                  aria-label="Notifications"
+                >
+                  <Bell size={16} />
+                  <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-brand-orange" />
+                </button>
+                {notifOpen && <NotificationCenter onClose={() => setNotifOpen(false)} />}
+              </div>
+            )}
             
             {/* Unified User Authentication Controls */}
             {role === 'guest' ? (
@@ -345,6 +365,14 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
                         {user?.title || 'National Oversight Administrator'}
                       </p>
                     </div>
+                    <NavLink
+                      to="/admin"
+                      onClick={() => setUserMenuOpen(false)}
+                      className="flex items-center gap-2 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-ink-800 text-slate-700 dark:text-slate-300 transition-colors"
+                    >
+                      <Building2 size={14} className="text-cyan-500" />
+                      <span>Admin Workspace</span>
+                    </NavLink>
                     <button
                       onClick={() => {
                         setUserMenuOpen(false)

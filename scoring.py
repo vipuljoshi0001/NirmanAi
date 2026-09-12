@@ -43,6 +43,10 @@ class ScoreEngine:
         self.feats = pd.read_sql("SELECT * FROM project_features", self.conn)
         self.explainer = None
 
+    def reload_data(self):
+        """Reload project_features table from DB after intelligence recomputations."""
+        self.feats = pd.read_sql("SELECT * FROM project_features", self.conn)
+
     # --- helpers ---------------------------------------------------------
     def _row(self, snapshot_id):
         m = self.feats[self.feats["snapshot_id"] == snapshot_id]

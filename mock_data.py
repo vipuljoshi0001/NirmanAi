@@ -306,8 +306,23 @@ def get_contractor(contractor_id: str) -> Optional[dict]:
 
 
 def get_contractor_for_project(project_id: str) -> dict:
-    """Return the assigned contractor for any project (deterministic fallback)."""
+    """Return the assigned contractor for any project (DB lookup with fallback)."""
+    import sqlite3, os
     pid_norm = project_id.strip()
+    if os.path.exists("project_monitoring.db"):
+        try:
+            conn = sqlite3.connect("project_monitoring.db")
+            cur = conn.cursor()
+            cur.execute("SELECT contractor_id FROM contractor_assignments WHERE project_id = ?", (pid_norm,))
+            row = cur.fetchone()
+            conn.close()
+            if row and row[0]:
+                c = get_contractor(row[0])
+                if c:
+                    return c
+        except Exception:
+            pass
+
     if pid_norm in EXPLICIT_ASSIGNMENTS:
         cid = EXPLICIT_ASSIGNMENTS[pid_norm]
         c = get_contractor(cid)
@@ -323,6 +338,30 @@ def geofence_for_project(project_id: str, state: str = "Maharashtra", radius_km:
 
     Returns dict with center_lat, center_lng, radius_km, and boundary polygon vertices.
     """
+    import sqlite3, json, os
+    if os.path.exists("project_monitoring.db"):
+        try:
+            conn = sqlite3.connect("project_monitoring.db")
+            cur = conn.cursor()
+            cur.execute("SELECT center_lat, center_lng, radius_km, boundary_geojson FROM project_geofences WHERE project_id = ?", (project_id,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                c_lat, c_lng, r_km, bg_json = row
+                bg = json.loads(bg_json) if isinstance(bg_json, str) else bg_json
+                coords = bg.get("coordinates", [[]])[0]
+                poly = [[pt[1], pt[0]] for pt in coords[:-1]] if coords else []
+                return {
+                    "project_id": project_id,
+                    "center_lat": float(c_lat),
+                    "center_lng": float(c_lng),
+                    "radius_km": float(r_km),
+                    "boundary_lamina": poly,
+                    "boundary_geojson": bg,
+                }
+        except Exception:
+            pass
+
     coords = None
     demo = demo_by_id(project_id)
     if demo:

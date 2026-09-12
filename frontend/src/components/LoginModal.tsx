@@ -1,32 +1,23 @@
 import React, { useState, useEffect } from 'react'
-import { X, ShieldCheck, HardHat, Building2, CheckCircle2, ArrowRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { X, ShieldCheck, HardHat, Building2, ArrowRight, KeyRound, UserCheck } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { getContractors } from '../services/api'
-import type { Contractor } from '../types'
 
 export const LoginModal: React.FC = () => {
   const { isLoginModalOpen, setLoginModalOpen, login } = useAuth()
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<'contractor' | 'admin'>('contractor')
-  const [contractors, setContractors] = useState<Contractor[]>([])
-  const [selectedContractorId, setSelectedContractorId] = useState<string>('CNT-LT-01')
-  const [customId, setCustomId] = useState<string>('')
+  
+  // Contractor login fields
+  const [contractorId, setContractorId] = useState<string>('CNT-LT-01')
+  const [contractorPassword, setContractorPassword] = useState<string>('contractor123')
+  
+  // Admin login fields
+  const [adminId, setAdminId] = useState<string>('admin')
+  const [adminPassword, setAdminPassword] = useState<string>('admin123')
+  
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (isLoginModalOpen) {
-      getContractors()
-        .then((data) => {
-          if (data && data.length > 0) {
-            setContractors(data)
-            if (!selectedContractorId) {
-              setSelectedContractorId(data[0].contractor_id)
-            }
-          }
-        })
-        .catch((err) => console.warn('Failed to load contractors', err))
-    }
-  }, [isLoginModalOpen])
 
   // Close on Escape
   useEffect(() => {
@@ -41,26 +32,45 @@ export const LoginModal: React.FC = () => {
 
   if (!isLoginModalOpen) return null
 
-  const handleContractorLogin = async () => {
+  const handleContractorSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!contractorId.trim()) {
+      setError('Please enter your Contractor ID')
+      return
+    }
+    if (!contractorPassword) {
+      setError('Please enter your password')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
-      const cid = customId.trim() || selectedContractorId
-      await login('contractor', cid)
+      await login('contractor', contractorId.trim(), contractorPassword)
+      navigate('/contractor')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
+      setError(err instanceof Error ? err.message : 'Authentication failed')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleAdminLogin = async () => {
+  const handleAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!adminId.trim()) {
+      setError('Please enter your Admin ID')
+      return
+    }
+    if (!adminPassword) {
+      setError('Please enter your admin password')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
-      await login('admin')
+      await login('admin', adminId.trim(), adminPassword)
+      navigate('/admin')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Admin login failed')
+      setError(err instanceof Error ? err.message : 'Admin authentication failed')
     } finally {
       setLoading(false)
     }
@@ -74,7 +84,7 @@ export const LoginModal: React.FC = () => {
         aria-hidden="true" 
       />
 
-      <div className="relative w-full max-w-lg rounded-2xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-2xl overflow-hidden z-10 flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-md rounded-2xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-2xl overflow-hidden z-10 flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-ink-800 bg-gradient-to-r from-slate-50 to-white dark:from-ink-900 dark:to-ink-850">
           <div>
@@ -82,10 +92,10 @@ export const LoginModal: React.FC = () => {
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand-orange/10 text-brand-orange">
                 <ShieldCheck size={18} />
               </span>
-              Paimana Unified Access Portal
+              Paimana Portal Login
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Sign in as Contractor to report work progress or as Oversight Admin
+              Secure credential-based authentication for Contractors & Admin
             </p>
           </div>
           <button
@@ -100,6 +110,7 @@ export const LoginModal: React.FC = () => {
         {/* Role Tabs */}
         <div className="flex border-b border-slate-200 dark:border-ink-800 bg-slate-50/50 dark:bg-ink-950/40 p-1.5 gap-1.5">
           <button
+            type="button"
             onClick={() => { setActiveTab('contractor'); setError(null) }}
             className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
               activeTab === 'contractor'
@@ -108,9 +119,10 @@ export const LoginModal: React.FC = () => {
             }`}
           >
             <HardHat size={16} />
-            Contractor Portal
+            Contractor Sign In
           </button>
           <button
+            type="button"
             onClick={() => { setActiveTab('admin'); setError(null) }}
             className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer ${
               activeTab === 'admin'
@@ -119,143 +131,178 @@ export const LoginModal: React.FC = () => {
             }`}
           >
             <Building2 size={16} />
-            Director General / Admin
+            Admin Panel Login
           </button>
         </div>
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-4">
           {error && (
-            <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 text-xs text-red-600 dark:text-red-400">
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-400">
               {error}
             </div>
           )}
 
           {activeTab === 'contractor' ? (
-            <div className="space-y-4">
+            <form onSubmit={handleContractorSubmit} className="space-y-4">
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
                 <HardHat className="text-brand-orange shrink-0 mt-0.5" size={16} />
                 <span>
-                  Contractors can view their assigned packages, upload physical progress and on-site geotagged photos subject to automated <strong>construction lamina geofencing</strong>.
+                  Contractors must sign in with their assigned <strong>Contractor ID & Password</strong> to submit on-site progress, photos, and access assigned packages.
                 </span>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">
-                  Select Registered Contractor Persona
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Contractor ID
                 </label>
-                <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                  {contractors.map((c) => {
-                    const isSelected = selectedContractorId === c.contractor_id && !customId.trim()
-                    return (
-                      <button
-                        key={c.contractor_id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedContractorId(c.contractor_id)
-                          setCustomId('')
-                        }}
-                        className={`w-full text-left p-3 rounded-xl border transition-all flex items-center justify-between cursor-pointer ${
-                          isSelected
-                            ? 'border-brand-orange bg-amber-50/50 dark:bg-amber-950/20 shadow-sm'
-                            : 'border-slate-200 dark:border-ink-800 hover:border-slate-300 dark:hover:border-ink-700 bg-white dark:bg-ink-850'
-                        }`}
-                      >
-                        <div className="min-w-0 flex items-center gap-3">
-                          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 dark:bg-ink-800 text-slate-700 dark:text-slate-300 font-bold text-xs">
-                            {c.contractor_id.replace('CNT-', '')}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                              {c.company_name}
-                            </p>
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                              {c.contact_person} • {c.email}
-                            </p>
-                          </div>
-                        </div>
-                        {isSelected ? (
-                          <CheckCircle2 size={16} className="text-brand-orange shrink-0 ml-2" />
-                        ) : (
-                          <span className="text-[10px] text-slate-400 shrink-0 font-mono">
-                            {c.contractor_id}
-                          </span>
-                        )}
-                      </button>
-                    )
-                  })}
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                    <UserCheck size={16} />
+                  </span>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. CNT-LT-01"
+                    value={contractorId}
+                    onChange={(e) => setContractorId(e.target.value)}
+                    className="w-full text-xs pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-ink-700 bg-slate-50 dark:bg-ink-950 text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-brand-orange focus:ring-1 focus:ring-brand-orange font-mono"
+                  />
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-100 dark:border-ink-800">
-                <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-                  Or enter custom Contractor ID:
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Contractor Password
                 </label>
-                <input
-                  type="text"
-                  placeholder="e.g. CNT-LT-01"
-                  value={customId}
-                  onChange={(e) => setCustomId(e.target.value)}
-                  className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-ink-700 bg-slate-50 dark:bg-ink-950 text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-brand-orange"
-                />
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                    <KeyRound size={16} />
+                  </span>
+                  <input
+                    type="password"
+                    required
+                    placeholder="Enter password"
+                    value={contractorPassword}
+                    onChange={(e) => setContractorPassword(e.target.value)}
+                    className="w-full text-xs pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-ink-700 bg-slate-50 dark:bg-ink-950 text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-brand-orange focus:ring-1 focus:ring-brand-orange"
+                  />
+                </div>
+              </div>
+
+              {/* Demo Quick-Fill Chips */}
+              <div className="pt-1">
+                <p className="text-[11px] text-slate-400 mb-1.5">Quick demo credentials:</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: 'L&T', id: 'CNT-LT-01' },
+                    { label: 'Afcons', id: 'CNT-AF-02' },
+                    { label: 'Tata', id: 'CNT-TP-03' },
+                    { label: 'Dilip', id: 'CNT-DB-04' },
+                    { label: 'MEIL', id: 'CNT-ME-05' },
+                  ].map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      onClick={() => {
+                        setContractorId(chip.id)
+                        setContractorPassword('contractor123')
+                        setError(null)
+                      }}
+                      className="px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold bg-slate-100 dark:bg-ink-800 text-slate-600 dark:text-slate-300 hover:bg-amber-100 dark:hover:bg-amber-950/40 hover:text-brand-orange transition-colors cursor-pointer"
+                    >
+                      {chip.label} ({chip.id})
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <button
-                type="button"
-                onClick={handleContractorLogin}
+                type="submit"
                 disabled={loading}
-                className="w-full py-2.5 px-4 rounded-xl bg-brand-orange hover:bg-brand-orangeDark text-white text-xs font-bold shadow-md shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 px-4 rounded-xl bg-brand-orange hover:bg-brand-orangeDark text-white text-xs font-bold shadow-md shadow-amber-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2"
               >
-                {loading ? 'Authenticating...' : 'Enter Contractor Portal'}
+                {loading ? 'Verifying Credentials...' : 'Sign In as Contractor'}
                 <ArrowRight size={14} />
               </button>
-            </div>
+            </form>
           ) : (
-            <div className="space-y-4">
+            <form onSubmit={handleAdminSubmit} className="space-y-4">
               <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-xl p-3 text-xs text-cyan-800 dark:text-cyan-300 flex items-start gap-2.5">
                 <ShieldCheck className="text-cyan-500 shrink-0 mt-0.5" size={16} />
                 <span>
-                  Admin login provides ministerial oversight, compliance audits of all contractor geofence submissions, and manual override capabilities.
+                  Admin login provides ministerial access to the dedicated <strong>Admin Panel</strong> for project registration, geofence definitions, and state package assignments.
                 </span>
               </div>
 
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-ink-800 bg-slate-50/50 dark:bg-ink-850 space-y-2">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-white font-bold text-sm shadow-md">
-                    DG
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Admin Username / ID
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                    <UserCheck size={16} />
                   </span>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                      Director General
-                    </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      National Infrastructure Oversight Authority (Govt of India)
-                    </p>
-                  </div>
-                </div>
-                <div className="pt-2 text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
-                  <p>• Full administrative authority over all 300+ monitored projects</p>
-                  <p>• Audit log inspection for on-site geofence violations</p>
-                  <p>• National capex velocity and ML risk overrides</p>
+                  <input
+                    type="text"
+                    required
+                    placeholder="admin or ADM-DG-01"
+                    value={adminId}
+                    onChange={(e) => setAdminId(e.target.value)}
+                    className="w-full text-xs pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-ink-700 bg-slate-50 dark:bg-ink-950 text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 font-mono"
+                  />
                 </div>
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Admin Password
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-400">
+                    <KeyRound size={16} />
+                  </span>
+                  <input
+                    type="password"
+                    required
+                    placeholder="Enter admin password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    className="w-full text-xs pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-ink-700 bg-slate-50 dark:bg-ink-950 text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                  />
+                </div>
+              </div>
+
+              {/* Demo Quick-Fill */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminId('admin')
+                    setAdminPassword('admin123')
+                    setError(null)
+                  }}
+                  className="px-2.5 py-1 rounded-md text-[11px] font-mono font-semibold bg-slate-100 dark:bg-ink-800 text-slate-600 dark:text-slate-300 hover:bg-cyan-100 dark:hover:bg-cyan-950/40 hover:text-cyan-600 transition-colors cursor-pointer"
+                >
+                  Quick Demo: admin / admin123
+                </button>
+              </div>
+
               <button
-                type="button"
-                onClick={handleAdminLogin}
+                type="submit"
                 disabled={loading}
-                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 text-white text-xs font-bold shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 text-white text-xs font-bold shadow-md shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2"
               >
-                {loading ? 'Authenticating...' : 'Enter as Director General'}
+                {loading ? 'Verifying Admin Credentials...' : 'Sign In as Oversight Admin'}
                 <ArrowRight size={14} />
               </button>
-            </div>
+            </form>
           )}
         </div>
 
         {/* Public view footnote */}
         <div className="px-6 py-3 bg-slate-50 dark:bg-ink-950 border-t border-slate-100 dark:border-ink-800 text-[11px] text-slate-400 text-center">
-          Note: Public national telemetry and data views remain open to all visitors without login.
+          Public national telemetry and data views remain accessible to all visitors without login.
         </div>
       </div>
     </div>

@@ -24,12 +24,19 @@ def main():
     check("center point is inside lamina polygon", vp.is_point_in_polygon(19.076, 72.878, poly))
     check("distant point (50km) is outside lamina polygon", not vp.is_point_in_polygon(19.5, 73.5, poly))
 
-    # 2. Unified authentication endpoint
-    admin_login = client.post("/api/auth/login", json={"role": "admin"}).json()
+    # 2. Unified authentication with ID & Password
+    # Invalid password test
+    bad_admin = client.post("/api/auth/login", json={"role": "admin", "username": "admin", "password": "wrongpassword"})
+    check("invalid admin password returns 401", bad_admin.status_code == 401)
+    bad_cnt = client.post("/api/auth/login", json={"role": "contractor", "contractor_id": "CNT-LT-01", "password": "wrongpassword"})
+    check("invalid contractor password returns 401", bad_cnt.status_code == 401)
+
+    # Valid credentials test
+    admin_login = client.post("/api/auth/login", json={"role": "admin", "username": "admin", "password": "admin123"}).json()
     check("admin login returns admin role", admin_login["role"] == "admin")
     check("admin login returns DG user profile", "Director General" in admin_login["user"]["title"])
 
-    contractor_login = client.post("/api/auth/login", json={"role": "contractor", "contractor_id": "CNT-LT-01"}).json()
+    contractor_login = client.post("/api/auth/login", json={"role": "contractor", "contractor_id": "CNT-LT-01", "password": "contractor123"}).json()
     check("contractor login returns contractor role", contractor_login["role"] == "contractor")
     check("contractor login returns company name", "Larsen & Toubro" in contractor_login["user"]["company"])
 
@@ -98,7 +105,58 @@ def main():
     subs = client.get("/api/contractor/CNT-LT-01/submissions").json()
     check("audit trail recorded submissions", len(subs) >= 2)
 
-    print(f"\nALL {PASS} CONTRACTOR & GEOFENCE TESTS PASSED!")
+    # 7. AI Intelligence derivation & Progress Bar update on existing project (PRJ-0001)
+    geo_p1 = client.get("/api/projects/PRJ-0001/geofence").json()
+    p1_lat = geo_p1["center_lat"]
+    p1_lng = geo_p1["center_lng"]
+
+    sub_existing = client.post(
+        "/api/contractor/submit-progress",
+        data={
+            "project_id": "PRJ-0001",
+            "contractor_id": "CNT-LT-01",
+            "physical_progress_pct": 78.5,
+            "financial_expenditure_cr": 190000.0,
+            "notes": "Verified high-pressure pipeline welding on-site",
+            "gps_lat": p1_lat,
+            "gps_lng": p1_lng,
+        },
+        files={"file": ("site_welding.jpg", img_bytes, "image/jpeg")},
+    ).json()
+    check("on-site submission accepted for PRJ-0001", sub_existing["status"] == "accepted")
+    check("derived ai intelligence returned", "ai_intelligence" in sub_existing and sub_existing["ai_intelligence"] is not None)
+    check("ai narrative formulated", len(sub_existing["ai_intelligence"]["narrative"]) > 20)
+
+    # Verify project detail has updated progress
+    p_detail = client.get("/api/projects/PRJ-0001").json()
+    check("PRJ-0001 physicalProgress updated to 78.5", p_detail["physicalProgress"] == 78.5)
+    check("PRJ-0001 health score recomputed", p_detail["health"] > 0)
+
+    # 8. Role-segregated notifications
+    guest_notifs = client.get("/api/notifications?role=guest").json()
+    check("no notifications for non-contractor non-admin guests", len(guest_notifs["notifications"]) == 0)
+
+    cnt_notifs = client.get("/api/notifications?role=contractor&contractor_id=CNT-LT-01").json()
+    check("contractor notifications show approved & rejected reports", len(cnt_notifs["notifications"]) >= 2)
+
+    admin_notifs = client.get("/api/notifications?role=admin").json()
+    check("admin notifications show national audit stream", len(admin_notifs["notifications"]) >= 2)
+
+    # 9. Admin assignment & custom geofencing endpoints
+    assign_res = client.post(
+        "/api/admin/assign-contractor",
+        json={"project_id": "PRJ-0001", "contractor_id": "CNT-AF-02", "package_name": "State Package 1", "contract_value_cr": 2500.0}
+    ).json()
+    check("admin assign contractor success", assign_res["status"] == "success")
+
+    geofence_res = client.post(
+        "/api/admin/geofence",
+        json={"project_id": "PRJ-0001", "center_lat": 19.100, "center_lng": 72.900, "radius_km": 4.5}
+    ).json()
+    check("admin set geofence success", geofence_res["status"] == "success")
+    check("custom geofence boundary lamina has 6 vertices", len(geofence_res["boundary_lamina"]) == 6)
+
+    print(f"\nALL {PASS} CONTRACTOR, ADMIN & GEOFENCE TESTS PASSED!")
 
 
 if __name__ == "__main__":

@@ -494,50 +494,108 @@ export function isPointInsideLamina(lat: number, lng: number, polygon: [number, 
 
 export async function authLogin(
   role: 'admin' | 'contractor',
-  contractorId?: string
+  id?: string,
+  password?: string
 ): Promise<{ status: string; role: string; user: AuthUser; token: string }> {
+  const res = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      role,
+      username: id || (role === 'admin' ? 'admin' : 'CNT-LT-01'),
+      contractor_id: id || 'CNT-LT-01',
+      password: password || (role === 'admin' ? 'admin123' : 'contractor123'),
+    }),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const data = await res.json()
+      if (data.detail) msg = data.detail
+    } catch {}
+    throw new Error(msg)
+  }
+  return await res.json()
+}
+
+export async function getNotifications(role: string, contractorId?: string): Promise<{ notifications: any[]; unread_count: number }> {
   try {
-    const res = await fetch(`${BASE_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role, contractor_id: contractorId || 'CNT-LT-01' }),
-    })
+    const url = `${BASE_URL}/api/notifications?role=${encodeURIComponent(role)}&contractor_id=${encodeURIComponent(contractorId || '')}`
+    const res = await fetch(url)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return await res.json()
   } catch (err) {
-    console.warn('Backend login unavailable, using client fallback', err)
-    if (role === 'admin') {
-      return {
-        status: 'success',
-        role: 'admin',
-        user: {
-          id: 'ADM-DG-01',
-          name: 'Director General',
-          company: 'Govt of India (MoSPI Oversight)',
-          role: 'admin',
-          title: 'Director General / Oversight Administrator',
-          email: 'dg.oversight@gov.in',
-          agency: 'National Infrastructure Monitoring Authority',
-        },
-        token: 'fallback_admin_token',
-      }
-    }
-    const c = FALLBACK_CONTRACTORS.find((x) => x.contractor_id === contractorId) || FALLBACK_CONTRACTORS[0]
-    return {
-      status: 'success',
-      role: 'contractor',
-      user: {
-        id: c.contractor_id,
-        name: c.contact_person,
-        company: c.company_name,
-        role: 'contractor',
-        email: c.email,
-        phone: c.phone,
-        rating: c.rating,
-      },
-      token: `fallback_token_${c.contractor_id}`,
-    }
+    console.warn('Failed to fetch notifications', err)
+    return { notifications: [], unread_count: 0 }
   }
+}
+
+export async function assignContractor(
+  projectId: string,
+  contractorId: string,
+  packageName?: string,
+  contractValueCr?: number
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/api/admin/assign-contractor`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: projectId,
+      contractor_id: contractorId,
+      package_name: packageName,
+      contract_value_cr: contractValueCr,
+    }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to assign contractor`)
+  return await res.json()
+}
+
+export async function setAdminGeofence(
+  projectId: string,
+  centerLat: number,
+  centerLng: number,
+  radiusKm: number = 3.5
+): Promise<any> {
+  const res = await fetch(`${BASE_URL}/api/admin/geofence`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: projectId,
+      center_lat: centerLat,
+      center_lng: centerLng,
+      radius_km: radiusKm,
+    }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to set geofence`)
+  return await res.json()
+}
+
+export async function getAdminAudits(limit: number = 100): Promise<any[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/admin/audits?limit=${limit}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Failed to fetch admin audits', err)
+    return []
+  }
+}
+
+export async function registerProject(projectData: any): Promise<any> {
+  const res = await fetch(`${BASE_URL}/api/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(projectData),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const d = await res.json()
+      if (d.detail) msg = d.detail
+    } catch {}
+    throw new Error(msg)
+  }
+  return await res.json()
 }
 
 export async function getContractors(): Promise<Contractor[]> {

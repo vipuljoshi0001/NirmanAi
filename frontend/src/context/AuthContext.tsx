@@ -5,7 +5,7 @@ import { authLogin } from '../services/api'
 interface AuthContextType {
   user: AuthUser | null
   role: UserRole
-  login: (role: 'admin' | 'contractor', contractorId?: string) => Promise<AuthUser>
+  login: (role: 'admin' | 'contractor', id: string, password?: string) => Promise<AuthUser>
   logout: () => void
   isLoginModalOpen: boolean
   setLoginModalOpen: (open: boolean) => void
@@ -39,8 +39,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user])
 
-  const login = async (role: 'admin' | 'contractor', contractorId?: string): Promise<AuthUser> => {
-    const res = await authLogin(role, contractorId)
+  const login = async (role: 'admin' | 'contractor', id: string, password?: string): Promise<AuthUser> => {
+    const res = await authLogin(role, id, password)
     setUser(res.user)
     setLoginModalOpen(false)
     return res.user
