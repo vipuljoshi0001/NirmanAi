@@ -96,7 +96,13 @@ CREATE TABLE IF NOT EXISTS project_features (
     physical_schedule_gap NUMERIC,
     expenditure_rate NUMERIC,
     sector_risk_baseline NUMERIC,
-    state_risk_baseline NUMERIC
+    state_risk_baseline NUMERIC,
+    prior_risk NUMERIC,
+    cost_vs_prior NUMERIC,
+    expected_slip NUMERIC,
+    slip_vs_expected NUMERIC,
+    rem_work NUMERIC,
+    burn_ratio NUMERIC
 );
 
 CREATE TABLE IF NOT EXISTS risk_scores (

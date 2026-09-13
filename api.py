@@ -567,27 +567,44 @@ def register_project(req: RegisterProjectRequest):
     c.execute(
         "INSERT OR REPLACE INTO model_risk_scores (project_id, snapshot_id, month, cop_prob, top_prob, model_risk_score, rule_risk_score, final_risk_score, risk_level) "
         "VALUES (?, ?, 'July', ?, ?, ?, ?, ?, ?)",
-        (new_id, f"{new_id}_July", pred_res["cop_prob"], pred_res["top_prob"], pred_res["model_risk_score"], pred_res["rule_risk_score"], pred_res["final_risk_score"], pred_res["risk_level"])
+        (new_id, f"{new_id}|July", pred_res["cop_prob"], pred_res["top_prob"], pred_res["model_risk_score"], pred_res["rule_risk_score"], pred_res["final_risk_score"], pred_res["risk_level"])
     )
 
-    # Persist initial project_features
+    # Persist in risk_scores table for 'July'
+    c.execute(
+        "INSERT OR REPLACE INTO risk_scores (project_id, snapshot_id, month, cost_risk, schedule_risk, progress_risk, risk_score, risk_level) "
+        "VALUES (?, ?, 'July', ?, ?, ?, ?, ?)",
+        (new_id, f"{new_id}|July", pred_res.get("cost_risk", 30.0), pred_res.get("schedule_risk", 20.0), pred_res.get("progress_risk", 20.0), pred_res["rule_risk_score"], pred_res["risk_level"])
+    )
+
+    # Persist initial project_features (all 16 features)
     elapsed = float(req.months_elapsed or 12.0)
     dur = float(req.duration_months or 36.0)
     exp_phys = float(np.clip(100 * elapsed / max(1, dur), 0, 100))
     fin_phys_gap = round(req.financial_progress_pct - req.physical_progress_pct, 3)
     phys_sched_gap = round(req.physical_progress_pct - exp_phys, 3)
     exp_rate = round(cum_exp / max(1, revised_cost) * 100, 3)
+    sec_base = float(pred_res.get("sector_risk_baseline", 8.0))
+    sta_base = float(pred_res.get("state_risk_baseline", 5.0))
+    prior_risk = float(pred_res.get("prior_risk", round(0.6 * sta_base + 0.4 * sec_base, 3)))
+    cost_vs_prior = float(pred_res.get("cost_vs_prior", round(req.cost_overrun_to_date_pct - prior_risk, 3)))
+    exp_slip = float(pred_res.get("expected_slip", round(max(0.0, req.cost_overrun_to_date_pct * 0.35 + (100.0 - req.physical_progress_pct) * 0.12), 3)))
+    slip_vs_exp = float(pred_res.get("slip_vs_expected", round(req.schedule_slip_months - exp_slip, 3)))
+    rem_work = float(pred_res.get("rem_work", round(max(0.0, 100.0 - req.physical_progress_pct), 3)))
+    burn_ratio = float(pred_res.get("burn_ratio", round(req.financial_progress_pct / max(1.0, req.physical_progress_pct), 3)))
 
     c.execute(
         "INSERT OR REPLACE INTO project_features "
         "(project_id, sector, state, month, snapshot_id, physical_progress_pct, financial_progress_pct, "
         "cost_overrun_to_date_pct, schedule_slip_months, financial_physical_gap, expected_physical_pct, "
-        "physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline) "
-        "VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (new_id, req.sector, req.state, f"{new_id}_July",
+        "physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline, "
+        "prior_risk, cost_vs_prior, expected_slip, slip_vs_expected, rem_work, burn_ratio) "
+        "VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_id, req.sector, req.state, f"{new_id}|July",
          req.physical_progress_pct, req.financial_progress_pct, req.cost_overrun_to_date_pct, req.schedule_slip_months,
          fin_phys_gap, exp_phys, phys_sched_gap, exp_rate,
-         pred_res.get("sector_risk_baseline", 8.0), pred_res.get("state_risk_baseline", 5.0))
+         sec_base, sta_base,
+         prior_risk, cost_vs_prior, exp_slip, slip_vs_exp, rem_work, burn_ratio)
     )
 
     # Persist designated geofence lamina if coordinates supplied
@@ -1198,7 +1215,7 @@ def recompute_project_intelligence(
             VALUES (?, ?, 'July', ?, ?, ?, ?, ?, ?)
         """, (
             project_id,
-            f"{project_id}_July",
+            f"{project_id}|July",
             pred_res["cop_prob"],
             pred_res["top_prob"],
             pred_res["model_risk_score"],
@@ -1207,23 +1224,48 @@ def recompute_project_intelligence(
             pred_res["risk_level"]
         ))
 
+        conn.execute("DELETE FROM risk_scores WHERE project_id = ? AND month = 'July'", (project_id,))
+        conn.execute("""
+            INSERT INTO risk_scores
+            (project_id, snapshot_id, month, cost_risk, schedule_risk, progress_risk, risk_score, risk_level)
+            VALUES (?, ?, 'July', ?, ?, ?, ?, ?)
+        """, (
+            project_id,
+            f"{project_id}|July",
+            pred_res.get("cost_risk", 30.0),
+            pred_res.get("schedule_risk", 20.0),
+            pred_res.get("progress_risk", 20.0),
+            pred_res["rule_risk_score"],
+            pred_res["risk_level"]
+        ))
+
         exp_phys = float(np.clip(100 * elapsed / max(1, duration_months), 0, 100))
         fin_phys_gap = round(fin_pct - physical_progress_pct, 3)
         phys_sched_gap = round(physical_progress_pct - exp_phys, 3)
         exp_rate = round(cum_exp / max(1, rev_cost) * 100, 3)
+        sec_base = float(pred_res.get("sector_risk_baseline", 8.0))
+        sta_base = float(pred_res.get("state_risk_baseline", 5.0))
+        prior_risk = float(pred_res.get("prior_risk", round(0.6 * sta_base + 0.4 * sec_base, 3)))
+        cost_vs_prior = float(pred_res.get("cost_vs_prior", round(overrun - prior_risk, 3)))
+        exp_slip = float(pred_res.get("expected_slip", round(max(0.0, overrun * 0.35 + (100.0 - physical_progress_pct) * 0.12), 3)))
+        slip_vs_exp = float(pred_res.get("slip_vs_expected", round(slip - exp_slip, 3)))
+        rem_work = float(pred_res.get("rem_work", round(max(0.0, 100.0 - physical_progress_pct), 3)))
+        burn_ratio = float(pred_res.get("burn_ratio", round(fin_pct / max(1.0, physical_progress_pct), 3)))
 
         conn.execute("DELETE FROM project_features WHERE project_id = ? AND month = 'July'", (project_id,))
         conn.execute("""
             INSERT INTO project_features
             (project_id, sector, state, month, snapshot_id, physical_progress_pct, financial_progress_pct,
              cost_overrun_to_date_pct, schedule_slip_months, financial_physical_gap, expected_physical_pct,
-             physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline)
-            VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             physical_schedule_gap, expenditure_rate, sector_risk_baseline, state_risk_baseline,
+             prior_risk, cost_vs_prior, expected_slip, slip_vs_expected, rem_work, burn_ratio)
+            VALUES (?, ?, ?, 'July', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            project_id, sector, state, f"{project_id}_July",
+            project_id, sector, state, f"{project_id}|July",
             physical_progress_pct, fin_pct, overrun, slip,
             fin_phys_gap, exp_phys, phys_sched_gap, exp_rate,
-            pred_res.get("sector_risk_baseline", 8.0), pred_res.get("state_risk_baseline", 5.0)
+            sec_base, sta_base,
+            prior_risk, cost_vs_prior, exp_slip, slip_vs_exp, rem_work, burn_ratio
         ))
 
         conn.commit()

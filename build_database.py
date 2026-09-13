@@ -101,18 +101,33 @@ def build_features(conn):
         feats["cumulative_expenditure"] / feats["revised_cost"].replace(0, np.nan) * 100).round(3)
     feats["snapshot_id"] = feats["project_id"] + "|" + feats["month"]
 
+    # Normalize common sector aliases
+    sector_map = {"Urban Transport": "Urban Public Transport", "Power & RE": "Electricity Generation"}
+    feats["sector"] = feats["sector"].replace(sector_map)
+
     feats = feats.merge(sec.rename(columns={"avg_cost_overrun_pct": "sector_risk_baseline"}),
                         on="sector", how="left")
     feats = feats.merge(sta.rename(columns={"avg_cost_overrun_pct": "state_risk_baseline"}),
                         on="state", how="left")
+    feats["sector_risk_baseline"] = feats["sector_risk_baseline"].fillna(8.0).round(3)
+    feats["state_risk_baseline"] = feats["state_risk_baseline"].fillna(5.0).round(3)
+
+    feats["prior_risk"] = (0.6 * feats["state_risk_baseline"] + 0.4 * feats["sector_risk_baseline"]).round(3)
+    feats["cost_vs_prior"] = (feats["cost_overrun_to_date_pct"].fillna(0.0) - feats["prior_risk"]).round(3)
+    feats["expected_slip"] = np.maximum(0.0, feats["cost_overrun_to_date_pct"].fillna(0.0) * 0.35 + (100.0 - feats["physical_progress_pct"].fillna(30.0)) * 0.12).round(3)
+    feats["slip_vs_expected"] = (feats["schedule_slip_months"].fillna(0.0) - feats["expected_slip"]).round(3)
+    feats["rem_work"] = np.maximum(0.0, 100.0 - feats["physical_progress_pct"].fillna(30.0)).round(3)
+    feats["burn_ratio"] = (feats["financial_progress_pct"].fillna(35.0) / np.maximum(1.0, feats["physical_progress_pct"].fillna(30.0))).round(3)
 
     out_cols = ["project_id", "sector", "state", "month", "snapshot_id",
                 "physical_progress_pct", "financial_progress_pct",
                 "cost_overrun_to_date_pct", "schedule_slip_months",
                 "financial_physical_gap", "expected_physical_pct",
                 "physical_schedule_gap", "expenditure_rate",
-                "sector_risk_baseline", "state_risk_baseline"]
-    feats.to_sql("project_features", conn, if_exists="replace", index=False)
+                "sector_risk_baseline", "state_risk_baseline",
+                "prior_risk", "cost_vs_prior", "expected_slip",
+                "slip_vs_expected", "rem_work", "burn_ratio"]
+    feats[out_cols].to_sql("project_features", conn, if_exists="replace", index=False)
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     print(f"Derived: project_features {len(feats)} rows")
 

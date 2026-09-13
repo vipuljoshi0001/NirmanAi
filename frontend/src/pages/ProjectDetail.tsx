@@ -53,6 +53,12 @@ const FEATURE_LABELS: Record<string, string> = {
   physical_progress_pct: 'Physical Execution %',
   financial_progress_pct: 'Financial Disbursement %',
   expected_physical_pct: 'Model Expected Progress %',
+  prior_risk: 'Regional Prior Risk Baseline',
+  cost_vs_prior: 'Cost Overrun vs Prior Baseline',
+  expected_slip: 'Theoretical Schedule Slip',
+  slip_vs_expected: 'Slip vs Velocity Expectation',
+  rem_work: 'Remaining Physical Work %',
+  burn_ratio: 'Financial-to-Physical Burn Ratio',
 }
 
 export default function ProjectDetail() {

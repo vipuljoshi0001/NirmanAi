@@ -46,6 +46,7 @@ class ScoreEngine:
     def reload_data(self):
         """Reload project_features table from DB after intelligence recomputations."""
         self.feats = pd.read_sql("SELECT * FROM project_features", self.conn)
+        self.explainer = None
 
     # --- helpers ---------------------------------------------------------
     def _row(self, snapshot_id):
@@ -55,7 +56,12 @@ class ScoreEngine:
         return m.iloc[0]
 
     def _features_df(self, rows):
-        return rows[T.FEATURES].astype(float)
+        df = rows.copy()
+        for f in T.FEATURES:
+            if f not in df.columns:
+                df = T.compute_engineered_features(df)
+                break
+        return df[T.FEATURES].astype(float)
 
     def _prob(self, row_df):
         if self.cop is not None and self.top is not None:
@@ -94,6 +100,9 @@ class ScoreEngine:
         q = ("SELECT warning_type, severity, signal_value FROM early_warnings "
              "WHERE snapshot_id=?")
         rows = pd.read_sql(q, self.conn, params=[snapshot_id])
+        if rows.empty:
+            return []
+        rows["signal_value"] = rows["signal_value"].fillna(0.0)
         return rows.to_dict("records")
 
     # --- main entry --------------------------------------------------------
@@ -133,13 +142,19 @@ class ScoreEngine:
                 "sector": d["sector"],
                 "state": d["state"],
                 "month": d["month"],
-                "snapshot_id": f"{project_id}_{d['month']}",
+                "snapshot_id": f"{project_id}|{d['month']}",
                 "physical_progress_pct": round(float(d["physical_progress_pct"]), 2),
                 "financial_progress_pct": round(float(d["financial_progress_pct"]), 2),
                 "cost_overrun_to_date_pct": round(float(d["cost_overrun_to_date_pct"]), 2),
                 "schedule_slip_months": round(float(d["schedule_slip_months"]), 2),
                 "sector_risk_baseline": pred_res["sector_risk_baseline"],
                 "state_risk_baseline": pred_res["state_risk_baseline"],
+                "prior_risk": pred_res["prior_risk"],
+                "cost_vs_prior": pred_res["cost_vs_prior"],
+                "expected_slip": pred_res["expected_slip"],
+                "slip_vs_expected": pred_res["slip_vs_expected"],
+                "rem_work": pred_res["rem_work"],
+                "burn_ratio": pred_res["burn_ratio"],
                 "cop_prob": round(float(d["cop_prob"]), 4),
                 "top_prob": round(float(d["top_prob"]), 4),
                 "model_risk_score": round(float(d["model_risk_score"]), 1),
@@ -197,6 +212,12 @@ class ScoreEngine:
             "schedule_slip_months": round(row["schedule_slip_months"], 2),
             "sector_risk_baseline": round(row["sector_risk_baseline"], 2),
             "state_risk_baseline": round(row["state_risk_baseline"], 2),
+            "prior_risk": round(float(row.get("prior_risk", 0.0)), 2),
+            "cost_vs_prior": round(float(row.get("cost_vs_prior", 0.0)), 2),
+            "expected_slip": round(float(row.get("expected_slip", 0.0)), 2),
+            "slip_vs_expected": round(float(row.get("slip_vs_expected", 0.0)), 2),
+            "rem_work": round(float(row.get("rem_work", 0.0)), 2),
+            "burn_ratio": round(float(row.get("burn_ratio", 0.0)), 2),
             "cop_prob": round(cop_prob, 4),
             "top_prob": round(top_prob, 4),
             "model_risk_score": round(model_score, 1),
@@ -249,13 +270,14 @@ class ScoreEngine:
             "sector_risk_baseline": sec_base,
             "state_risk_baseline": sta_base,
         }
-        row_df = pd.DataFrame([feat_dict])[T.FEATURES].astype(float)
+        row_df = pd.DataFrame([feat_dict])
+        row_df = T.compute_engineered_features(row_df)[T.FEATURES].astype(float)
         cop_prob, top_prob = self._prob(row_df)
         model_score = 100 * 0.5 * (cop_prob + top_prob)
 
-        cost_risk = np.clip(30 + overrun * 0.7, 0, 100)
-        schedule_risk = np.clip(20 + slip * 3.0, 0, 100)
-        progress_risk = np.clip(20 + (-phys_sched_gap * 0.6) + (-fin_phys_gap * 1.2), 0, 100)
+        cost_risk = float(np.clip(30 + overrun * 0.7, 0, 100))
+        schedule_risk = float(np.clip(20 + slip * 3.0, 0, 100))
+        progress_risk = float(np.clip(20 + (-phys_sched_gap * 0.6) + (-fin_phys_gap * 1.2), 0, 100))
         rule_score = round(0.45 * cost_risk + 0.35 * schedule_risk + 0.20 * progress_risk, 1)
         final_score = float(np.clip(0.5 * model_score + 0.5 * rule_score, 0, 100))
 
@@ -288,9 +310,18 @@ class ScoreEngine:
             "schedule_slip_months": slip,
             "sector_risk_baseline": sec_base,
             "state_risk_baseline": sta_base,
+            "prior_risk": float(row_df["prior_risk"].iloc[0]),
+            "cost_vs_prior": float(row_df["cost_vs_prior"].iloc[0]),
+            "expected_slip": float(row_df["expected_slip"].iloc[0]),
+            "slip_vs_expected": float(row_df["slip_vs_expected"].iloc[0]),
+            "rem_work": float(row_df["rem_work"].iloc[0]),
+            "burn_ratio": float(row_df["burn_ratio"].iloc[0]),
             "cop_prob": round(cop_prob, 4),
             "top_prob": round(top_prob, 4),
             "model_risk_score": round(model_score, 1),
+            "cost_risk": round(cost_risk, 1),
+            "schedule_risk": round(schedule_risk, 1),
+            "progress_risk": round(progress_risk, 1),
             "rule_risk_score": round(rule_score, 1),
             "final_risk_score": round(final_score, 1),
             "risk_level": risk_level(final_score),
