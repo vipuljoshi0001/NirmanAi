@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import db_manager
 import llm
 import mock_data
 import scoring
@@ -40,7 +41,9 @@ app = FastAPI(title="Infrastructure Oversight Co-Pilot API")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-DB = "project_monitoring.db"
+DB = db_manager.DB_CORE
+DB_CONTRACTORS_ADMIN = db_manager.DB_CONTRACTORS_ADMIN
+DB_REPORTS_PHOTOS = db_manager.DB_REPORTS_PHOTOS
 MONTH_ORDER = ["Feb", "March", "April", "May", "June", "July"]
 
 # ---------------------------------------------------------------------------
@@ -51,104 +54,24 @@ UPLOAD_DIR.mkdir(exist_ok=True)  # safe when the server starts from any cwd
 
 
 def _ensure_verification_schema():
-    """Idempotent guard; the table is also declared in schema.sql."""
-    conn = sqlite3.connect(DB)
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS verification_records ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  file_name TEXT NOT NULL,"
-            "  upload_path TEXT NOT NULL,"
-            "  project_id TEXT NOT NULL,"
-            "  submitted_at TEXT NOT NULL,"
-            "  status TEXT NOT NULL,"
-            "  result_json TEXT NOT NULL"
-            ")"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """Ensure verification_records and photo_uploads exist in reports_photos.db."""
+    db_manager.init_reports_photos_db()
 
 
 def _ensure_contractor_schema():
-    """Ensure contractors, contractor_assignments, contractor_progress_reports, and project_geofences tables exist."""
-    _ensure_verification_schema()
-    conn = sqlite3.connect(DB)
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contractors ("
-            "  contractor_id TEXT PRIMARY KEY,"
-            "  company_name TEXT NOT NULL,"
-            "  contact_person TEXT,"
-            "  email TEXT,"
-            "  phone TEXT,"
-            "  rating NUMERIC DEFAULT 4.5,"
-            "  active_contracts INT DEFAULT 0"
-            ")"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contractor_assignments ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  project_id TEXT,"
-            "  contractor_id TEXT,"
-            "  package_name TEXT,"
-            "  assigned_date TEXT,"
-            "  contract_value_cr NUMERIC,"
-            "  UNIQUE(project_id, contractor_id)"
-            ")"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contractor_progress_reports ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  submission_id TEXT UNIQUE,"
-            "  project_id TEXT NOT NULL,"
-            "  contractor_id TEXT NOT NULL,"
-            "  physical_progress_pct NUMERIC,"
-            "  financial_expenditure_cr NUMERIC,"
-            "  notes TEXT,"
-            "  photo_url TEXT,"
-            "  gps_lat NUMERIC,"
-            "  gps_lng NUMERIC,"
-            "  inside_geofence INT,"
-            "  verification_status TEXT,"
-            "  counts_towards_progress INT,"
-            "  submitted_at TEXT NOT NULL,"
-            "  details_json TEXT,"
-            "  ai_intelligence_json TEXT"
-            ")"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS project_geofences ("
-            "  project_id TEXT PRIMARY KEY,"
-            "  center_lat NUMERIC NOT NULL,"
-            "  center_lng NUMERIC NOT NULL,"
-            "  radius_km NUMERIC DEFAULT 3.0,"
-            "  boundary_geojson TEXT NOT NULL,"
-            "  created_at TEXT"
-            ")"
-        )
-        # Migrate existing contractor_progress_reports if column missing
-        try:
-            conn.execute("ALTER TABLE contractor_progress_reports ADD COLUMN ai_intelligence_json TEXT")
-        except Exception:
-            pass
+    """Ensure contractors_admin.db and reports_photos.db schemas and tables exist."""
+    db_manager.init_all_databases()
 
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM contractors")
-        if cur.fetchone()[0] == 0:
-            for c in mock_data.CONTRACTORS:
-                cur.execute(
-                    "INSERT OR REPLACE INTO contractors (contractor_id, company_name, contact_person, email, phone, rating, active_contracts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (c["contractor_id"], c["company_name"], c["contact_person"], c["email"], c["phone"], c.get("rating", 4.5), c.get("active_contracts", 4))
-                )
-            for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items():
-                cur.execute(
-                    "INSERT OR IGNORE INTO contractor_assignments (project_id, contractor_id, package_name, assigned_date, contract_value_cr) VALUES (?, ?, ?, ?, ?)",
-                    (pid, cid, f"Civil Works Pkg - {pid}", "2024-01-15", 1250.0)
-                )
-        conn.commit()
-    finally:
-        conn.close()
+
+@app.get("/api/databases/status")
+def databases_status():
+    """Diagnostic endpoint reporting status, file sizes, and table counts across the 3 dedicated databases:
+    1. Core Telemetry DB (project_monitoring.db)
+    2. Contractors & Admin DB (contractors_admin.db)
+    3. Reports & Photo Uploads DB (reports_photos.db)
+    """
+    _ensure_contractor_schema()
+    return db_manager.get_all_database_status()
 
 
 
@@ -862,18 +785,42 @@ async def verify_image_upload(
     result["project_id"] = project_id
     result["project_coords"] = {"lat": coords[0], "lng": coords[1]}
 
-    conn = sqlite3.connect(DB)
+    conn = db_manager.get_reports_photos_conn()
     try:
         conn.execute(
             "INSERT INTO verification_records "
-            "(file_name, upload_path, project_id, submitted_at, status, result_json) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (file.filename or safe_name, safe_name, project_id,
-             result["submitted_at"], result["status"], json.dumps(result)),
+            "(file_name, original_name, capture_time, client_lat, client_lng, extracted_lat, extracted_lng, distance_meters, result_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (safe_name, file.filename or safe_name,
+             result.get("captured_at", result["submitted_at"]),
+             coords[0], coords[1],
+             result.get("gps", {}).get("lat") if result.get("gps") else None,
+             result.get("gps", {}).get("lng") if result.get("gps") else None,
+             result.get("distance_km", 0.0) * 1000 if result.get("distance_km") else 0.0,
+             json.dumps(result),
+             result["status"],
+             result["submitted_at"]),
+        )
+        file_size = target.stat().st_size if target.exists() else 0
+        conn.execute(
+            "INSERT OR REPLACE INTO photo_uploads (file_name, file_path, file_size, content_type, project_id, contractor_id, uploaded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (safe_name, str(target), file_size, file.content_type or "image/jpeg", project_id, None, result["submitted_at"])
         )
         conn.commit()
     finally:
         conn.close()
+
+    # Mirror to project_monitoring.db for backwards compatibility
+    try:
+        with sqlite3.connect(DB) as c_core:
+            c_core.execute(
+                "INSERT INTO verification_records (file_name, upload_path, project_id, submitted_at, status, result_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (file.filename or safe_name, safe_name, project_id, result["submitted_at"], result["status"], json.dumps(result))
+            )
+            c_core.commit()
+    except Exception:
+        pass
     return result
 
 
@@ -890,34 +837,30 @@ def serve_upload(filename: str):
 @app.get("/api/verification-records")
 def verification_records(project_id: Optional[str] = None, limit: int = 50):
     """Recent verification decisions (audit trail used by the demo UI)."""
-    conn = sqlite3.connect(DB)
+    _ensure_verification_schema()
+    conn = db_manager.get_reports_photos_conn()
     try:
-        if project_id:
-            rows = conn.execute(
-                "SELECT id, file_name, project_id, submitted_at, status, result_json "
-                "FROM verification_records WHERE project_id = ? ORDER BY id DESC LIMIT ?",
-                (project_id, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, file_name, project_id, submitted_at, status, result_json "
-                "FROM verification_records ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+        rows = conn.execute(
+            "SELECT id, file_name, result_json, status, created_at FROM verification_records ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
     finally:
         conn.close()
     out = []
     for row in rows:
         try:
-            res = json.loads(row[5])
+            res = json.loads(row[2])
         except Exception:
+            continue
+        pid = res.get("project_id", "")
+        if project_id and pid != project_id:
             continue
         out.append({
             "id": row[0],
             "file_name": row[1],
-            "project_id": row[2],
-            "submitted_at": row[3],
-            "status": row[4],
+            "project_id": pid,
+            "submitted_at": row[4],
+            "status": row[3],
             "file_url": res.get("file_url", f"/uploads/{row[1]}"),
             "gps": res.get("gps"),
             "distance_km": res.get("distance_km"),
@@ -988,80 +931,135 @@ class LoginRequest(BaseModel):
 @app.post("/api/auth/login")
 def auth_login(req: LoginRequest):
     _ensure_contractor_schema()
-    if req.role == "admin":
-        admin_id = (req.username or req.contractor_id or "").strip()
-        pwd = (req.password or "").strip()
+    conn_admin = db_manager.get_contractors_admin_conn()
+    try:
+        is_admin_req = req.role == "admin" or ((req.username or req.contractor_id or "").strip().lower() in {"admin", "adm-dg-01", "director", "dg"})
+        if is_admin_req:
+            admin_id = (req.username or req.contractor_id or "").strip()
+            pwd = (req.password or "").strip()
 
-        if not admin_id or admin_id.lower() not in {"admin", "adm-dg-01", "director", "dg"}:
-            raise HTTPException(401, "Invalid admin ID. Authorized ID is 'admin' or 'ADM-DG-01'")
-        if pwd != "admin123":
-            raise HTTPException(401, "Invalid admin password. Default demo password is 'admin123'")
+            if not admin_id:
+                raise HTTPException(401, "Admin username/ID is required")
 
-        return {
-            "status": "success",
-            "role": "admin",
-            "user": {
-                "id": "ADM-DG-01",
-                "name": "Director General",
-                "company": "Govt of India (MoSPI Oversight)",
+            cur = conn_admin.cursor()
+            cur.execute(
+                "SELECT admin_id, username, password, name, role, title, company, agency, email "
+                "FROM admins WHERE LOWER(username) = LOWER(?) OR LOWER(admin_id) = LOWER(?)",
+                (admin_id, admin_id)
+            )
+            admin_row = cur.fetchone()
+
+            if not admin_row:
+                if admin_id.lower() in {"admin", "adm-dg-01", "director", "dg"}:
+                    admin_row = ("ADM-DG-01", "admin", "admin123", "Director General", "admin",
+                                 "Director General / Oversight Administrator", "Govt of India (MoSPI Oversight)",
+                                 "National Infrastructure Monitoring Authority", "dg.oversight@gov.in")
+                else:
+                    raise HTTPException(401, "Invalid admin ID. Authorized ID is 'admin' or 'ADM-DG-01'")
+
+            stored_pwd = admin_row[2]
+            if pwd != stored_pwd and pwd != "admin123":
+                raise HTTPException(401, "Invalid admin password. Default demo password is 'admin123'")
+
+            return {
+                "status": "success",
                 "role": "admin",
-                "title": "Director General / Oversight Administrator",
-                "email": "dg.oversight@gov.in",
-                "agency": "National Infrastructure Monitoring Authority"
-            },
-            "token": "admin_session_token_xyz"
-        }
-    else:
-        cid = (req.contractor_id or req.username or "").strip().upper()
-        pwd = (req.password or "").strip()
+                "user": {
+                    "id": admin_row[0],
+                    "name": admin_row[3],
+                    "company": admin_row[6],
+                    "role": admin_row[4],
+                    "title": admin_row[5],
+                    "email": admin_row[8],
+                    "agency": admin_row[7]
+                },
+                "token": "admin_session_token_xyz"
+            }
+        else:
+            cid = (req.contractor_id or req.username or "").strip().upper()
+            pwd = (req.password or "").strip()
 
-        if not cid:
-            raise HTTPException(400, "Contractor ID is required")
+            if not cid:
+                raise HTTPException(400, "Contractor ID is required")
 
-        c = mock_data.get_contractor(cid)
-        if not c:
-            raise HTTPException(404, f"Contractor ID '{cid}' not found in registry")
+            cur = conn_admin.cursor()
+            cur.execute(
+                "SELECT contractor_id, password, company_name, contact_person, email, phone, rating, active_contracts "
+                "FROM contractors WHERE UPPER(contractor_id) = ?",
+                (cid,)
+            )
+            c_row = cur.fetchone()
 
-        if pwd != "contractor123":
-            raise HTTPException(401, "Invalid contractor password. Default demo password is 'contractor123'")
+            if not c_row:
+                c_mock = mock_data.get_contractor(cid)
+                if not c_mock:
+                    raise HTTPException(404, f"Contractor ID '{cid}' not found in registry")
+                c_row = (c_mock["contractor_id"], "contractor123", c_mock["company_name"],
+                         c_mock["contact_person"], c_mock["email"], c_mock["phone"],
+                         c_mock.get("rating", 4.5), c_mock.get("active_contracts", 4))
 
-        return {
-            "status": "success",
-            "role": "contractor",
-            "user": {
-                "id": c["contractor_id"],
-                "name": c["contact_person"],
-                "company": c["company_name"],
+            stored_pwd = c_row[1]
+            if pwd != stored_pwd and pwd != "contractor123":
+                raise HTTPException(401, "Invalid contractor password. Default demo password is 'contractor123'")
+
+            return {
+                "status": "success",
                 "role": "contractor",
-                "email": c["email"],
-                "phone": c["phone"],
-                "rating": c.get("rating", 4.5),
-            },
-            "token": f"contractor_session_{c['contractor_id']}"
-        }
+                "user": {
+                    "id": c_row[0],
+                    "contractor_id": c_row[0],
+                    "name": c_row[3],
+                    "company": c_row[2],
+                    "role": "contractor",
+                    "email": c_row[4],
+                    "phone": c_row[5],
+                    "rating": float(c_row[6] or 4.5),
+                },
+                "token": f"contractor_session_{c_row[0]}"
+            }
+    finally:
+        conn_admin.close()
 
 
 @app.get("/api/contractors")
 def list_contractors():
     _ensure_contractor_schema()
-    return mock_data.CONTRACTORS
+    conn_admin = db_manager.get_contractors_admin_conn()
+    try:
+        cur = conn_admin.cursor()
+        cur.execute("SELECT contractor_id, company_name, contact_person, email, phone, rating, active_contracts FROM contractors")
+        rows = cur.fetchall()
+        if rows:
+            return [{
+                "contractor_id": r[0],
+                "company_name": r[1],
+                "contact_person": r[2],
+                "email": r[3],
+                "phone": r[4],
+                "rating": float(r[5] or 4.5),
+                "active_contracts": int(r[6] or 0),
+            } for r in rows]
+        return mock_data.CONTRACTORS
+    finally:
+        conn_admin.close()
 
 
 @app.get("/api/contractors/{contractor_id}/projects")
+@app.get("/api/contractor/{contractor_id}/projects")
 def contractor_projects(contractor_id: str):
     _ensure_contractor_schema()
     c = mock_data.get_contractor(contractor_id)
     if not c:
         raise HTTPException(404, "Contractor not found")
 
-    conn = sqlite3.connect(DB)
+    conn_admin = db_manager.get_contractors_admin_conn()
     try:
-        cur = conn.cursor()
+        cur = conn_admin.cursor()
         cur.execute("SELECT project_id FROM contractor_assignments WHERE UPPER(contractor_id) = ?", (contractor_id.upper(),))
         rows = cur.fetchall()
         assigned_pids = [r[0] for r in rows if r[0]]
     finally:
-        conn.close()
+        conn_admin.close()
 
     if not assigned_pids:
         assigned_pids = [pid for pid, cid in mock_data.EXPLICIT_ASSIGNMENTS.items() if cid.upper() == contractor_id.upper()]
@@ -1082,7 +1080,22 @@ def contractor_projects(contractor_id: str):
         """, params=[pid])
 
         st = p_row.iloc[0]["state"] if not p_row.empty else "Maharashtra"
-        geofence = mock_data.geofence_for_project(pid, state=st)
+        geofence = None
+        with db_manager.get_contractors_admin_conn() as c_adm:
+            cur = c_adm.cursor()
+            cur.execute("SELECT center_lat, center_lng, radius_km, boundary_geojson FROM project_geofences WHERE project_id = ?", (pid,))
+            gf_row = cur.fetchone()
+            if gf_row:
+                geofence = {
+                    "project_id": pid,
+                    "center_lat": gf_row[0],
+                    "center_lng": gf_row[1],
+                    "radius_km": gf_row[2],
+                    "boundary_geojson": json.loads(gf_row[3]),
+                    "boundary_lamina": verification.generate_lamina_polygon(gf_row[0], gf_row[1], radius_km=gf_row[2], vertices=6)
+                }
+        if not geofence:
+            geofence = mock_data.geofence_for_project(pid, state=st)
 
         if not p_row.empty:
             card = format_project_card(p_row.iloc[0].to_dict())
@@ -1121,7 +1134,26 @@ def contractor_projects(contractor_id: str):
 
 
 @app.get("/api/projects/{project_id}/geofence")
+@app.get("/api/project/{project_id}/geofence")
 def project_geofence(project_id: str):
+    _ensure_contractor_schema()
+    conn_admin = db_manager.get_contractors_admin_conn()
+    try:
+        cur = conn_admin.cursor()
+        cur.execute("SELECT center_lat, center_lng, radius_km, boundary_geojson FROM project_geofences WHERE project_id = ?", (project_id,))
+        row = cur.fetchone()
+        if row:
+            return {
+                "project_id": project_id,
+                "center_lat": row[0],
+                "center_lng": row[1],
+                "radius_km": row[2],
+                "boundary_geojson": json.loads(row[3]),
+                "boundary_lamina": verification.generate_lamina_polygon(row[0], row[1], radius_km=row[2], vertices=6)
+            }
+    finally:
+        conn_admin.close()
+
     p_row = q("SELECT state FROM projects WHERE project_id = ?", params=[project_id])
     state = str(p_row.iloc[0]["state"]) if not p_row.empty else "Maharashtra"
     return mock_data.geofence_for_project(project_id, state=state)
@@ -1314,11 +1346,28 @@ async def contractor_submit_progress(
     captured_at: Optional[str] = Form(None),
 ):
     _ensure_verification_schema()
+    _ensure_verification_schema()
     _ensure_contractor_schema()
 
-    p_row = q("SELECT state FROM projects WHERE project_id = ?", params=[project_id])
-    state = str(p_row.iloc[0]["state"]) if not p_row.empty else "Maharashtra"
-    geofence = mock_data.geofence_for_project(project_id, state=state)
+    # Look up geofence from contractors_admin.db first
+    geofence = None
+    with db_manager.get_contractors_admin_conn() as c_adm:
+        cur = c_adm.cursor()
+        cur.execute("SELECT center_lat, center_lng, radius_km, boundary_geojson FROM project_geofences WHERE project_id = ?", (project_id,))
+        gf_row = cur.fetchone()
+        if gf_row:
+            geofence = {
+                "project_id": project_id,
+                "center_lat": gf_row[0],
+                "center_lng": gf_row[1],
+                "radius_km": gf_row[2],
+                "boundary_geojson": json.loads(gf_row[3]),
+                "boundary_lamina": verification.generate_lamina_polygon(gf_row[0], gf_row[1], radius_km=gf_row[2], vertices=6)
+            }
+    if not geofence:
+        p_row = q("SELECT state FROM projects WHERE project_id = ?", params=[project_id])
+        state = str(p_row.iloc[0]["state"]) if not p_row.empty else "Maharashtra"
+        geofence = mock_data.geofence_for_project(project_id, state=state)
 
     ext = Path(file.filename or "site.jpg").suffix.lower() or ".jpg"
     if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
@@ -1355,9 +1404,10 @@ async def contractor_submit_progress(
         )
         updated_progress = physical_progress_pct
 
-    conn = sqlite3.connect(DB)
+    # Persist in dedicated reports_photos.db
+    conn_rp = db_manager.get_reports_photos_conn()
     try:
-        conn.execute("""
+        conn_rp.execute("""
         INSERT INTO contractor_progress_reports
         (submission_id, project_id, contractor_id, physical_progress_pct, financial_expenditure_cr, notes, photo_url, gps_lat, gps_lng, inside_geofence, verification_status, counts_towards_progress, submitted_at, details_json, ai_intelligence_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1374,17 +1424,55 @@ async def contractor_submit_progress(
             json.dumps(result),
             json.dumps(ai_intelligence) if ai_intelligence else None,
         ))
-        conn.execute("""
+        conn_rp.execute("""
         INSERT INTO verification_records
-        (file_name, upload_path, project_id, submitted_at, status, result_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (file_name, original_name, capture_time, client_lat, client_lng, extracted_lat, extracted_lng, distance_meters, result_json, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            file.filename or safe_name, safe_name, project_id,
-            result["submitted_at"], result["status"], json.dumps(result),
+            safe_name, file.filename or safe_name,
+            result.get("captured_at", result["submitted_at"]),
+            gps_lat, gps_lng,
+            result.get("gps", {}).get("lat") if result.get("gps") else None,
+            result.get("gps", {}).get("lng") if result.get("gps") else None,
+            result.get("distance_km", 0.0) * 1000 if result.get("distance_km") else 0.0,
+            json.dumps(result),
+            result["status"],
+            result["submitted_at"],
         ))
-        conn.commit()
+        file_size = target.stat().st_size if target.exists() else 0
+        conn_rp.execute("""
+        INSERT INTO photo_uploads (file_name, file_path, file_size, content_type, project_id, contractor_id, uploaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            safe_name, str(target), file_size, file.content_type or "image/jpeg", project_id, contractor_id, result["submitted_at"]
+        ))
+        conn_rp.commit()
     finally:
-        conn.close()
+        conn_rp.close()
+
+    # Mirror to project_monitoring.db for backwards compatibility
+    try:
+        with sqlite3.connect(DB) as c_core:
+            c_core.execute("""
+            INSERT OR REPLACE INTO contractor_progress_reports
+            (submission_id, project_id, contractor_id, physical_progress_pct, financial_expenditure_cr, notes, photo_url, gps_lat, gps_lng, inside_geofence, verification_status, counts_towards_progress, submitted_at, details_json, ai_intelligence_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sub_id, project_id, contractor_id,
+                physical_progress_pct, financial_expenditure_cr, notes,
+                f"/uploads/{safe_name}",
+                result.get("gps", {}).get("lat") if result.get("gps") else gps_lat,
+                result.get("gps", {}).get("lng") if result.get("gps") else gps_lng,
+                1 if is_inside else 0,
+                result["status"],
+                counts_towards_progress,
+                result["submitted_at"],
+                json.dumps(result),
+                json.dumps(ai_intelligence) if ai_intelligence else None,
+            ))
+            c_core.commit()
+    except Exception:
+        pass
 
     dist_val = result.get("distance_km")
     dist_str = f"{dist_val:.2f} km" if dist_val is not None else "on-site"
@@ -1399,7 +1487,9 @@ async def contractor_submit_progress(
         "project_id": project_id,
         "contractor_id": contractor_id,
         "status": result["status"],
+        "verification_status": result["status"],
         "counts": bool(counts_towards_progress),
+        "counts_towards_progress": bool(counts_towards_progress),
         "inside_geofence": is_inside,
         "message": msg,
         "verification": result,
@@ -1411,12 +1501,13 @@ async def contractor_submit_progress(
 
 
 @app.get("/api/contractor/{contractor_id}/submissions")
+@app.get("/api/contractors/{contractor_id}/submissions")
 def contractor_submissions(contractor_id: str, limit: int = 50):
     _ensure_contractor_schema()
-    conn = sqlite3.connect(DB)
+    conn_rp = db_manager.get_reports_photos_conn()
     try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn_rp.row_factory = sqlite3.Row
+        cur = conn_rp.cursor()
         cur.execute("""
         SELECT * FROM contractor_progress_reports
         WHERE UPPER(contractor_id) = ?
@@ -1424,7 +1515,7 @@ def contractor_submissions(contractor_id: str, limit: int = 50):
         """, (contractor_id.upper(), limit))
         return [dict(r) for r in cur.fetchall()]
     finally:
-        conn.close()
+        conn_rp.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1440,9 +1531,9 @@ class AssignContractorRequest(BaseModel):
 @app.post("/api/admin/assign-contractor")
 def admin_assign_contractor(req: AssignContractorRequest):
     _ensure_contractor_schema()
-    conn = sqlite3.connect(DB)
+    conn_admin = db_manager.get_contractors_admin_conn()
     try:
-        conn.execute("""
+        conn_admin.execute("""
         INSERT OR REPLACE INTO contractor_assignments
         (project_id, contractor_id, package_name, assigned_date, contract_value_cr)
         VALUES (?, ?, ?, ?, ?)
@@ -1453,9 +1544,21 @@ def admin_assign_contractor(req: AssignContractorRequest):
             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             req.contract_value_cr or 1200.0,
         ))
-        conn.commit()
+        conn_admin.commit()
     finally:
-        conn.close()
+        conn_admin.close()
+
+    # Mirror to project_monitoring.db
+    try:
+        with sqlite3.connect(DB) as c_core:
+            c_core.execute("""
+            INSERT OR REPLACE INTO contractor_assignments
+            (project_id, contractor_id, package_name, assigned_date, contract_value_cr)
+            VALUES (?, ?, ?, ?, ?)
+            """, (req.project_id, req.contractor_id, req.package_name or f"Package Contract -- {req.project_id}", datetime.now(timezone.utc).strftime("%Y-%m-%d"), req.contract_value_cr or 1200.0))
+            c_core.commit()
+    except Exception:
+        pass
 
     mock_data.EXPLICIT_ASSIGNMENTS[req.project_id] = req.contractor_id
     c = mock_data.get_contractor(req.contractor_id)
@@ -1475,6 +1578,7 @@ class AdminGeofenceRequest(BaseModel):
 
 
 @app.post("/api/admin/geofence")
+@app.post("/api/admin/set-geofence")
 def admin_set_geofence(req: AdminGeofenceRequest):
     _ensure_contractor_schema()
     poly = verification.generate_lamina_polygon(req.center_lat, req.center_lng, radius_km=req.radius_km, vertices=6)
@@ -1482,9 +1586,9 @@ def admin_set_geofence(req: AdminGeofenceRequest):
         "type": "Polygon",
         "coordinates": [[[pt[1], pt[0]] for pt in poly] + [[poly[0][1], poly[0][0]]]]
     }
-    conn = sqlite3.connect(DB)
+    conn_admin = db_manager.get_contractors_admin_conn()
     try:
-        conn.execute("""
+        conn_admin.execute("""
         INSERT OR REPLACE INTO project_geofences
         (project_id, center_lat, center_lng, radius_km, boundary_geojson, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -1496,9 +1600,19 @@ def admin_set_geofence(req: AdminGeofenceRequest):
             json.dumps(bg),
             datetime.now(timezone.utc).isoformat()
         ))
-        conn.commit()
+        conn_admin.commit()
     finally:
-        conn.close()
+        conn_admin.close()
+
+    try:
+        with sqlite3.connect(DB) as c_core:
+            c_core.execute("""
+            INSERT OR REPLACE INTO project_geofences (project_id, center_lat, center_lng, radius_km, boundary_geojson, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, (req.project_id, req.center_lat, req.center_lng, req.radius_km, json.dumps(bg), datetime.now(timezone.utc).isoformat()))
+            c_core.commit()
+    except Exception:
+        pass
 
     return {
         "status": "success",
@@ -1514,19 +1628,34 @@ def admin_set_geofence(req: AdminGeofenceRequest):
 @app.get("/api/admin/audits")
 def admin_audits(limit: int = 100):
     _ensure_contractor_schema()
-    conn = sqlite3.connect(DB)
+    conn_rp = db_manager.get_reports_photos_conn()
+    conn_admin = db_manager.get_contractors_admin_conn()
     try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        conn_rp.row_factory = sqlite3.Row
+        cur = conn_rp.cursor()
         cur.execute("""
-        SELECT r.*, c.company_name, c.contact_person
-        FROM contractor_progress_reports r
-        LEFT JOIN contractors c ON r.contractor_id = c.contractor_id
-        ORDER BY r.id DESC LIMIT ?
+        SELECT * FROM contractor_progress_reports
+        ORDER BY id DESC LIMIT ?
         """, (limit,))
-        return [dict(r) for r in cur.fetchall()]
+        reports = [dict(r) for r in cur.fetchall()]
+
+        cur_adm = conn_admin.cursor()
+        cur_adm.execute("SELECT contractor_id, company_name, contact_person FROM contractors")
+        c_map = {r[0]: (r[1], r[2]) for r in cur_adm.fetchall()}
+
+        for rep in reports:
+            cid = rep.get("contractor_id")
+            if cid in c_map:
+                rep["company_name"] = c_map[cid][0]
+                rep["contact_person"] = c_map[cid][1]
+            else:
+                rep["company_name"] = cid
+                rep["contact_person"] = ""
+
+        return reports
     finally:
-        conn.close()
+        conn_rp.close()
+        conn_admin.close()
 
 
 @app.get("/api/notifications")
@@ -1541,11 +1670,16 @@ def get_notifications(role: str = "guest", contractor_id: Optional[str] = None):
     if role == "guest" or role not in {"admin", "contractor"}:
         return {"notifications": [], "unread_count": 0}
 
-    conn = sqlite3.connect(DB)
+    conn_rp = db_manager.get_reports_photos_conn()
+    conn_admin = db_manager.get_contractors_admin_conn()
     try:
-        cur = conn.cursor()
-        c_names = {c["contractor_id"]: c["company_name"] for c in mock_data.CONTRACTORS}
+        cur_adm = conn_admin.cursor()
+        cur_adm.execute("SELECT contractor_id, company_name FROM contractors")
+        c_names = {r[0]: r[1] for r in cur_adm.fetchall()}
+        for c in mock_data.CONTRACTORS:
+            c_names.setdefault(c["contractor_id"], c["company_name"])
 
+        cur = conn_rp.cursor()
         if role == "contractor":
             cid = (contractor_id or "CNT-LT-01").strip().upper()
             cur.execute("""
@@ -1626,8 +1760,10 @@ def get_notifications(role: str = "guest", contractor_id: Optional[str] = None):
                         "progress": phys,
                     })
             return {"notifications": notifs, "unread_count": len(notifs)}
+        return {"notifications": [], "unread_count": 0}
     finally:
-        conn.close()
+        conn_rp.close()
+        conn_admin.close()
 
 
 

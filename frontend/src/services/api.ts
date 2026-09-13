@@ -673,4 +673,15 @@ export async function getContractorSubmissions(contractorId: string): Promise<Co
   }
 }
 
+export async function getDatabasesStatus(): Promise<any> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/databases/status`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.warn('Failed to fetch databases status', err)
+    return null
+  }
+}
+
 
